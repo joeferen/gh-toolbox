@@ -1,32 +1,35 @@
 name: yt-dlp 下载器
 
+# 仅手动触发：在 Actions 页面 Run workflow 时按需填写参数
 on:
-  # 手动触发：可临时指定 URL / 格式 / 播放列表上限
   workflow_dispatch:
     inputs:
       urls:
-        description: "下载目标（视频/播放列表 URL，每行一个；留空则使用 tools/ytdlp/urls.txt）"
+        description: "下载目标（视频/播放列表/直链/M3U8 URL，每行一个；留空则使用 tools/ytdlp/urls.txt）"
         required: false
         default: ""
       format:
-        description: "格式表达式，如 bv*+ba/b、best[height<=1080]"
+        description: "格式表达式，如 bv*+ba/b、best[height<=1080]、best"
         required: false
         default: ""
       playlist_end:
         description: "每个播放列表最多下载几个视频，0 = 不限制"
         required: false
         default: "0"
-
-  # 定时触发：UTC 18:00 = 北京时间 02:00；注释掉即可关闭
-  schedule:
-    - cron: "0 18 * * *"
-
-  # 本工具的文件变更时立即执行
-  push:
-    branches: [main]
-    paths:
-      - "tools/ytdlp/**"
-      - ".github/workflows/ytdlp.yml"
+      transcode:
+        description: "转码为 MP4：none=不处理 / remux=仅换封装(流拷贝,快) / recode=重编码H.264/AAC(慢,兼容最好)"
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - "none"
+          - "remux"
+          - "recode"
+      aria2:
+        description: "使用 aria2c 多连接加速下载（勾选后自动安装 aria2）"
+        required: false
+        default: false
+        type: boolean
 
 # 同一分支不并发跑，排队执行
 concurrency:
@@ -60,6 +63,16 @@ jobs:
           yt-dlp --version
           ffmpeg -version | head -n 1
 
+      # 勾选 aria2 输入时按需安装（ubuntu-latest 镜像一般已带，缺失才装）
+      - name: 安装 aria2（勾选加速时）
+        if: ${{ github.event.inputs.aria2 }}
+        run: |
+          if ! command -v aria2c >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y aria2
+          fi
+          aria2c --version | head -n 1
+
       # 可选：在仓库 Secrets 配置 YTDLP_COOKIES（cookies.txt 的 base64）后自动启用
       - name: 写入 cookies（可选）
         if: ${{ secrets.YTDLP_COOKIES != '' }}
@@ -75,6 +88,8 @@ jobs:
           YTDLP_URLS: ${{ github.event.inputs.urls }}
           YTDLP_FORMAT: ${{ github.event.inputs.format }}
           YTDLP_PLAYLIST_END: ${{ github.event.inputs.playlist_end }}
+          YTDLP_TRANSCODE: ${{ github.event.inputs.transcode }}
+          YTDLP_ARIA2: ${{ github.event.inputs.aria2 }}
         run: python tools/ytdlp/download.py
 
       - name: 上传下载产物
@@ -87,7 +102,7 @@ jobs:
           if-no-files-found: warn
           compression-level: 0
 
-      # 把下载档案提交回仓库，下次定时任务据此跳过已下载内容
+      # 把下载档案提交回仓库，后续手动运行据此跳过已下载内容
       - name: 回写下载档案
         if: always()
         run: |

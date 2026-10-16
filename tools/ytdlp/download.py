@@ -22,6 +22,9 @@
   YTDLP_RETRIES          网络重试次数（默认 10）
   YTDLP_COOKIES           Netscape 格式 cookies 文件路径（可选）
   YTDLP_VERBOSE          置 1 输出 yt-dlp debug 日志
+  YTDLP_TRANSCODE        转码为 MP4：none(默认)/remux(仅换封装,流拷贝)/recode(重编码H.264+AAC,慢)
+  YTDLP_ARIA2            置 1/true/yes/on 启用 aria2c 多连接加速（未安装则回退内置下载器）
+  YTDLP_ARIA2_ARGS       aria2c 附加参数，空格分隔（默认 -x 16 -s 16 -k 1M）
 
 退出码：0 = 全部成功/无需下载；1 = 存在失败项；2 = 缺少依赖。
 """
@@ -29,6 +32,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -161,6 +165,30 @@ def build_opts() -> dict:
     playlist_end = env_int("YTDLP_PLAYLIST_END", 0)
     if playlist_end > 0:
         opts["playlistend"] = playlist_end
+
+    # 转码为 MP4。注意：remuxvideo/recodevideo 只有 yt-dlp CLI 认，
+    # Python API 必须显式挂 FFmpegVideoRemuxer/Convertor 后处理器才生效
+    transcode = env("YTDLP_TRANSCODE", "none").lower()
+    if transcode == "remux":
+        # 仅换 mp4 封装、流直接拷贝（快；编码不兼容 mp4 时 ffmpeg 会报错）
+        opts["postprocessors"] = [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}]
+        opts["postprocessor_args"] = {"videoremuxer": ["-movflags", "+faststart"]}
+    elif transcode == "recode":
+        # 换 mp4 封装，并按 ffmpeg 的 mp4 默认编码器重编码（H.264/AAC，慢但兼容性最好）
+        opts["postprocessors"] = [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}]
+    elif transcode not in ("none", "no", "off", ""):
+        log(f"YTDLP_TRANSCODE={transcode} 无法识别，已忽略（可选 none/remux/recode）")
+
+    # aria2c 多连接加速（本机未安装时回退内置下载器）
+    if env("YTDLP_ARIA2").lower() in ("1", "true", "yes", "on"):
+        if shutil.which("aria2c"):
+            opts["external_downloader"] = "aria2c"
+            opts["external_downloader_args"] = {
+                "aria2c": env("YTDLP_ARIA2_ARGS", "-x 16 -s 16 -k 1M").split()
+            }
+            log("已启用 aria2c 外部下载器加速")
+        else:
+            log("未检测到 aria2c，回退内置下载器（GitHub Actions 勾选后会自动安装；本地请先安装 aria2）")
     return opts
 
 

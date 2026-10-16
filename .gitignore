@@ -1,6 +1,11 @@
 # 各工具的输出目录（由 GitHub Actions Artifact 分发）
 tools/*/downloads/
 
+# 青龙面板的数据卷 / cloudflared 二进制与日志（体积大且含 sqlite，走 Artifact 分发）
+tools/qinglong/data/
+tools/qinglong/bin/
+tools/qinglong/cloudflared.log
+
 # cookies 等本地敏感文件（不要提交）
 cookies.txt
 tools/*/cookies.txt
