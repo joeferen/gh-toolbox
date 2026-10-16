@@ -189,6 +189,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 - 修改 `YTDLP_OUTPUT_DIR` 时，同步修改 workflow 中 `upload-artifact` 的 `path`。
 - **转码模式**（`YTDLP_TRANSCODE`）：`remux` = 换 mp4 封装且流直接拷贝（秒级、无损，源编码不兼容 mp4 时 ffmpeg 报错）；`recode` = 换 mp4 封装并按 ffmpeg 的 mp4 默认编码器重编码（视频 H.264、音频 AAC，慢但任何来源都能得到标准 MP4）。注意：① HLS/m3u8 来源 yt-dlp 默认就输出 mp4，转码参数主要服务于 mkv/webm/ts 等其他封装；② 已是 mp4 的文件会跳过不重复处理；③ recode 重编码耗时较长，大视频留意 6 小时 job 上限。
 - **aria2**：勾选后 workflow 自动安装；本地运行需 PATH 中已有 `aria2c`，否则脚本告警并回退内置下载器。aria2 主要加速直链/分片下载，HLS(m3u8) 仍走 yt-dlp 内置或 ffmpeg 下载器。
+- **Artifact 限额**：GitHub 制品存储按套餐配额（Free 500 MB / Pro 1 GB / Team 2 GB / Enterprise 50 GB，与 Packages 共享，超额按 $0.25/GB-月计费，且 GitHub 不支持提升该额度）；官方未公布单文件硬上限，实际上传耗时计入 6 小时 job 上限。**下载视频很容易吃满配额——大文件建议直接用 HF datasets 上传**（见上），或调短 `retention-days`（当前 7 天）及时释放。
 
 ## qinglong 工具说明
 
