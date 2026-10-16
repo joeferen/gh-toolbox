@@ -20,10 +20,6 @@ on:
         description: "青龙面板 Docker 镜像（依赖兼容问题可换 whyour/qinglong:debian）"
         required: false
         default: "whyour/qinglong:latest"
-      persist_data:
-        description: "结束后把 data/ 数据目录提交回仓库（默认否，数据以 Artifact 分发）"
-        type: boolean
-        default: false
 
   # 定时触发示例：每天北京时间 06:00 起一个最长 6 小时的面板。默认关闭，需要时取消注释
   # schedule:
@@ -35,7 +31,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write # persist_data=true 时回写数据目录
+  contents: read # 只读检出，不向仓库写任何文件
 
 jobs:
   panel:
@@ -81,15 +77,3 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
           compression-level: 0
-
-      # 可选：把 data/ 提交回仓库（含 sqlite/日志，仓库会持续变大，默认关闭）
-      - name: 回写数据目录（可选）
-        if: ${{ github.event.inputs.persist_data == true || github.event.inputs.persist_data == 'true' }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f tools/qinglong/data 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(qinglong): 更新面板数据 [skip ci]"
-            git push
-          fi

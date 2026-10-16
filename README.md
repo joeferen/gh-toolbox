@@ -21,7 +21,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 │   │   ├── download.py            # 主脚本（入口）
 │   │   ├── requirements.txt       # 该工具专属依赖
 │   │   ├── urls.txt               # 输入清单
-│   │   ├── .ytdlp-archive.txt     # 跨运行状态，由 workflow 提交回仓库
+│   │   ├── .ytdlp-archive.txt     # 下载档案（仅单次运行内有效，不写回仓库）
 │   │   └── downloads/             # 输出目录（gitignore，走 Artifact）
 │   └── qinglong/
 │       ├── run_panel.py           # 主脚本（入口）：起面板 + CF Tunnel + 保活
@@ -39,7 +39,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
   `checkout → setup-python → pip install -r tools/<工具>/requirements.txt → 运行脚本 → upload-artifact`
 - 触发方式按工具自行选择（`workflow_dispatch` / `schedule` / `push`）；**ytdlp 当前为纯手动触发**，参数在 Run workflow 时填写。
 - 例外：服务型工具（`qinglong`）**不加 `push` 触发**——代码变更就自动拉起一个最长 6 小时的长驻任务没有意义，只手动 / 定时启动。
-- 跨运行需要保留的状态（如下载档案）放工具目录内，workflow 结束时 `git commit` 回写（消息带 `[skip ci]`，且 push 路径过滤，不会递归触发）。
+- **workflow 不向仓库写任何文件**：产物只进 Artifact，仓库保持只读（`permissions: contents: read`）；需要跨运行保留的状态（下载档案、青龙数据等）随 Artifact 分发或本地留存，不提交回仓库。
 
 ## 新增一个工具
 
@@ -132,7 +132,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 
 ### 下载档案
 
-`download.py` 每下载完成一个视频就把 `extractor 视频ID` 写入 `.ytdlp-archive.txt`，workflow 结束后把该文件提交回仓库，因此定时任务不会重复下载已完成的内容。删除某行即可强制重新下载。
+`download.py` 每下载完成一个视频就把 `extractor 视频ID` 写入 `.ytdlp-archive.txt`，**单次运行内**重复的 URL、重叠的播放列表条目不会重复下载。注意 workflow 不把该文件写回仓库（仓库只读），runner 也是临时的——每次手动运行都从空档案开始；想要跨运行防重复，就本地运行并保留该文件，或自行把它提交进仓库（脚本读取到即生效）。删除某行即可强制重新下载。
 
 ### 注意事项
 
@@ -155,7 +155,6 @@ base64 -w0 cookies.txt   # 生成单行 base64
    - `cf_mode`：`quick`（默认，免密临时隧道）或 `token`（命名隧道，需先配 Secret）
    - `run_minutes`：保活时长，默认 360（= runner 上限，约 6 小时）
    - `ql_image`：镜像，默认 `whyour/qinglong:latest`；依赖兼容问题换 `whyour/qinglong:debian`
-   - `persist_data`：是否把 `data/` 提交回仓库，默认否
 2. 运行后访问地址有两个来源：**Step Summary**（`青龙面板已启动` 摘要）和运行日志里打印的 `青龙面板访问地址：https://xxx.trycloudflare.com`。
 3. 首次打开会引导初始化管理员账号——**立刻设置强密码**，临时隧道域名是公开可猜的随机地址。
 4. 结束后的 `data/` 目录（配置、脚本、sqlite、日志）在 **Artifacts** 区下载 `qinglong-data`。
@@ -181,7 +180,6 @@ base64 -w0 cookies.txt   # 生成单行 base64
 | `run_minutes` | `RUN_MINUTES` | 保活分钟数，0 = 跑到被取消/超时 | `360` |
 | `cf_mode` | `CF_MODE` | `quick` / `token` / `none`（none = 只起面板） | `quick` |
 | `ql_image` | `QL_IMAGE` | 青龙镜像 | `whyour/qinglong:latest` |
-| `persist_data` | — | 结束把 `data/` 提交回仓库 | `false` |
 | — | `CF_TUNNEL_TOKEN` | 命名隧道 Token（Secret，勿写进仓库） | 空 |
 | — | `QL_PORT` / `QL_CONTAINER` | 面板端口 / 容器名 | `5700` / `ql-toolbox` |
 | — | `QL_DATA_DIR` | 数据目录（挂载 `/ql/data`） | `tools/qinglong/data` |
@@ -201,8 +199,7 @@ CF_MODE=none RUN_MINUTES=0 python tools/qinglong/run_panel.py
 
 ### 数据持久化
 
-- **默认（推荐）**：`data/` 在 `.gitignore` 中，结束后上传 Artifact `qinglong-data`（保留 7 天）。下次要用旧数据：下载解压到 `tools/qinglong/data/` 再跑（该目录不进 git，本地/Artifact 两路留存）。
-- **可选**：`persist_data=true` 时 workflow 把整个 `data/` `git add -f` 提交回仓库。包含 sqlite 二进制和日志，**仓库体积会持续增长**，只适合配置很小、接受仓库变大的场景。
+- **默认（唯一方式）**：`data/` 在 `.gitignore` 中，结束后上传 Artifact `qinglong-data`（保留 7 天）。下次要用旧数据：下载解压到 `tools/qinglong/data/` 再跑（该目录不进 git，本地/Artifact 两路留存）。workflow 不往仓库提交任何文件。
 
 ### 注意事项
 

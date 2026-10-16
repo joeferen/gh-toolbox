@@ -37,7 +37,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # 回写下载档案
+  contents: read # 只读检出，不向仓库写任何文件
 
 jobs:
   download:
@@ -107,15 +107,3 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
           compression-level: 0
-
-      # 把下载档案提交回仓库，后续手动运行据此跳过已下载内容
-      - name: 回写下载档案
-        if: always()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tools/ytdlp/.ytdlp-archive.txt 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(ytdlp): 更新下载档案 [skip ci]"
-            git push
-          fi
