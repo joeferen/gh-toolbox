@@ -1,0 +1,8 @@
+# 下载产物（由 GitHub Actions Artifact 分发）
+downloads/
+
+# cookies 等本地敏感文件（不要提交）
+cookies.txt
+
+__pycache__/
+*.pyc

@@ -1,0 +1,2 @@
+# yt-dlp 更新非常频繁（各站点改版），不锁版本，由 CI 每次 pip install -U 装最新
+yt-dlp

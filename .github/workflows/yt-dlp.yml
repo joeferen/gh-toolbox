@@ -1,0 +1,101 @@
+name: yt-dlp 下载器
+
+on:
+  # 手动触发：可临时指定 URL / 格式 / 播放列表上限
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: "下载目标（视频/播放列表 URL，每行一个；留空则使用仓库中的 urls.txt）"
+        required: false
+        default: ""
+      format:
+        description: "格式表达式，如 bv*+ba/b、best[height<=1080]"
+        required: false
+        default: ""
+      playlist_end:
+        description: "每个播放列表最多下载几个视频，0 = 不限制"
+        required: false
+        default: "0"
+
+  # 定时触发：UTC 18:00 = 北京时间 02:00；注释掉即可关闭
+  schedule:
+    - cron: "0 18 * * *"
+
+  # urls.txt 或脚本变更时立即执行
+  push:
+    branches: [main]
+    paths:
+      - "urls.txt"
+      - "scripts/download.py"
+      - "requirements.txt"
+      - ".github/workflows/yt-dlp.yml"
+
+# 同一分支不并发跑，排队执行
+concurrency:
+  group: ytdlp-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # 回写下载档案 .ytdlp-archive.txt
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      YTDLP_ARCHIVE: .ytdlp-archive.txt
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖（yt-dlp 保持最新）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -U -r requirements.txt
+          yt-dlp --version
+          ffmpeg -version | head -n 1
+
+      # 可选：在仓库 Secrets 配置 YTDLP_COOKIES（cookies.txt 的 base64）后自动启用
+      - name: 写入 cookies（可选）
+        if: ${{ secrets.YTDLP_COOKIES != '' }}
+        env:
+          YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES }}
+        run: |
+          printf '%s' "$YTDLP_COOKIES_B64" | base64 -d > cookies.txt
+          echo "YTDLP_COOKIES=cookies.txt" >> "$GITHUB_ENV"
+
+      # GitHub Action 控制 Python 脚本的入口：inputs -> 环境变量 -> 脚本
+      - name: 运行下载脚本
+        env:
+          YTDLP_URLS: ${{ github.event.inputs.urls }}
+          YTDLP_FORMAT: ${{ github.event.inputs.format }}
+          YTDLP_PLAYLIST_END: ${{ github.event.inputs.playlist_end }}
+        run: python scripts/download.py
+
+      - name: 上传下载产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytdlp-downloads
+          path: downloads/
+          retention-days: 7
+          if-no-files-found: warn
+          compression-level: 0
+
+      # 把下载档案提交回仓库，下次定时任务据此跳过已下载内容
+      - name: 回写下载档案
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ytdlp-archive.txt 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(ytdlp): 更新下载档案 [skip ci]"
+            git push
+          fi

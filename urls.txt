@@ -1,0 +1,7 @@
+# yt-dlp 下载目标清单
+# 每行一个视频/播放列表 URL；"#" 开头为注释；空行忽略。
+# 在 Actions 页面手动触发时传入 urls 参数，则优先使用参数、忽略本文件。
+#
+# 示例（取消注释即可测试）：
+# https://www.youtube.com/watch?v=BaW_jenozKc
+# https://www.bilibili.com/video/BV1GJ411x7h7
