@@ -180,16 +180,14 @@ base64 -w0 cookies.txt   # 生成单行 base64
 
 ### 注意事项
 
-- **Artifact 体积**：GitHub 免费额度有存储上限（仓库级 500 MB），大下载建议缩短 `retention-days` 或改用其他存储（如 rclone 上传 WebDAV/网盘）。
 - **完成日志**：每个文件下载完成即输出完整路径、大小与耗时——单文件一行含三项；播放列表等批量下载在整批结束后逐文件输出路径+大小，并给出本批合计耗时；任务结束汇总文件数与下载总耗时。
 - **yt-dlp 时效性**：workflow 每次 `pip install -U` 装最新版；仍可能遇到站点改版导致个别 URL 失败——脚本会跳过失败项继续下载其他 URL，最终以退出码 1 标记失败。
 - **大播放列表/频道**：首次会解析两遍（先查档案再下载），`YTDLP_PLAYLIST_END` 可限制规模。
 - **时区**：cron 使用 UTC，默认 `0 18 * * *` = 北京时间 02:00。
 - **超时**：job `timeout-minutes: 360` 为 GitHub 托管 runner 上限，特大任务需拆分。
-- 修改 `YTDLP_OUTPUT_DIR` 时，同步修改 workflow 中 `upload-artifact` 的 `path`。
 - **转码模式**（`YTDLP_TRANSCODE`）：`remux` = 换 mp4 封装且流直接拷贝（秒级、无损，源编码不兼容 mp4 时 ffmpeg 报错）；`recode` = 换 mp4 封装并按 ffmpeg 的 mp4 默认编码器重编码（视频 H.264、音频 AAC，慢但任何来源都能得到标准 MP4）。注意：① HLS/m3u8 来源 yt-dlp 默认就输出 mp4，转码参数主要服务于 mkv/webm/ts 等其他封装；② 已是 mp4 的文件会跳过不重复处理；③ recode 重编码耗时较长，大视频留意 6 小时 job 上限。
 - **aria2**：勾选后 workflow 自动安装；本地运行需 PATH 中已有 `aria2c`，否则脚本告警并回退内置下载器。aria2 主要加速直链/分片下载，HLS(m3u8) 仍走 yt-dlp 内置或 ffmpeg 下载器。
-- **Artifact 限额**：GitHub 制品存储按套餐配额（Free 500 MB / Pro 1 GB / Team 2 GB / Enterprise 50 GB，与 Packages 共享，超额按 $0.25/GB-月计费，且 GitHub 不支持提升该额度）；官方未公布单文件硬上限，实际上传耗时计入 6 小时 job 上限。**下载视频很容易吃满配额——大文件建议直接用 HF datasets 上传**（见上），或调短 `retention-days`（当前 7 天）及时释放。
+- **产物留存**：ytdlp **不上传 GitHub Artifact**（制品存储按套餐限额：Free 500 MB / Pro 1 GB / Team 2 GB / Enterprise 50 GB，与 Packages 共享且不支持提升）——runner 是临时的，需要文件就启用 `hf_upload` 传到 HF datasets，或本地运行；青龙面板仍用 Artifact 留存数据。
 
 ## qinglong 工具说明
 
