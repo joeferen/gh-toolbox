@@ -17,7 +17,7 @@ on:
         required: false
         default: "0"
       transcode:
-        description: "转码为 MP4：none=不转(探测到TS流如实命名.ts) / remux=仅换封装(流拷贝,快) / recode=重编码H.264/AAC(慢,兼容最好)；都会按真实封装修正后缀"
+        description: "转码为 MP4（依赖 ffmpeg）：none=不转(探测到TS流如实命名.ts) / remux=仅换封装流拷贝(快/无损/体积不变) / recode=重编码H.264+AAC(慢/有损/体积会变)；都会按真实封装修正后缀"
         required: false
         default: "none"
         type: choice

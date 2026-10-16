@@ -25,11 +25,13 @@
   YTDLP_RETRIES          网络重试次数（默认 10）
   YTDLP_COOKIES           Netscape 格式 cookies 文件路径（可选）
   YTDLP_VERBOSE          置 1 输出 yt-dlp debug 日志
-  YTDLP_TRANSCODE        转码为 MP4：none(默认)/remux(仅换封装,流拷贝)/recode(重编码H.264+AAC,慢)。
-                         依赖 ffmpeg（yt-dlp 的 remux/recode 即调用 ffmpeg）；未安装时脚本直接
-                         报错退出(退出码 2)，不会默默产出 TS。下载完成后脚本还会用 ffprobe 探测
-                         真实封装并修正：TS 流在 none 下如实改名为 .ts，在 remux/recode 下真正
-                         转成 MP4（而非仅改后缀）
+  YTDLP_TRANSCODE        转码为 MP4（依赖 ffmpeg，缺失则报错退出码 2）：
+                         none(默认)=不转码，探测到 TS 流如实命名为 .ts
+                         remux=仅换封装、流拷贝（快、无损、码率体积不变）
+                         recode=重编码为 H.264+AAC（慢、有损、体积与耗时都会变；
+                                 用于源编码不兼容 MP4 的场景，如 mpeg2/wmv 源）
+                         下载完成后脚本还会用 ffprobe 探测真实封装兜底修正：
+                         TS 流冒充 .mp4 时，remux 流拷贝转换、recode 真正重编码
   YTDLP_ARIA2            置 1/true/yes/on 启用 aria2c 多连接加速（未安装则回退内置下载器）
   YTDLP_ARIA2_ARGS       aria2c 附加参数，空格分隔（默认 -x 16 -s 16 -k 1M）
   YTDLP_HF_UPLOAD        置 1/true/yes/on 启用上传到 Hugging Face datasets（默认关）
@@ -217,6 +219,12 @@ def build_opts() -> dict:
     elif transcode == "recode":
         # 换 mp4 封装，并按 ffmpeg 的 mp4 默认编码器重编码（H.264/AAC，慢但兼容性最好）
         opts["postprocessors"] = [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}]
+        # HLS 的格式 ext 通常是 mp4，原生 FFmpegVideoConvertor 会按扩展名跳过
+        # （"already is in target format mp4"），实际转换反而落在 FixupM3u8 上，
+        # 而 FixupM3u8 只会流拷贝(-c copy)——重编码承诺落空、remux/recode 输出
+        # 一模一样。关掉 fixup 让 TS 内容保留到下载后的探测层，由该层真正重编码
+        # （fix_mislabeled_files 的 recode 分支，参数同 ffmpeg 默认编码器）
+        opts["fixup"] = "never"
     elif transcode not in ("none", "no", "off", ""):
         log(f"YTDLP_TRANSCODE={transcode} 无法识别，已忽略（可选 none/remux/recode）")
 

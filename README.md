@@ -67,7 +67,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `urls` | string | 下载目标，每行一个（视频/播放列表/直链/M3U8）；留空用 `urls.txt` | 空 |
 | `format` | string | 格式表达式 | 空（脚本默认 `bv*+ba/b`） |
 | `playlist_end` | string | 每个播放列表下载上限，0 不限 | `0` |
-| `transcode` | choice | 转码为 MP4（**依赖 ffmpeg**，workflow 自动保证；本地需自备）：`none` 不转(探测到 TS 流则如实命名 .ts) / `remux` 仅换封装(流拷贝,快) / `recode` 重编码 H.264/AAC(慢,兼容最好)。三种模式都会探测真实封装、杜绝「TS 内容顶着 mp4 名」 | `none` |
+| `transcode` | choice | 转码为 MP4（**依赖 ffmpeg**，workflow 自动保证；本地需自备）：`none` 不转(探测到 TS 流则如实命名 .ts) / `remux` 仅换封装、流拷贝(快/无损/体积不变) / `recode` 重编码 H.264+AAC(慢/有损/体积会变，救不兼容编码的源)。都会按真实封装修正后缀 | `none` |
 | `aria2` | boolean | 使用 aria2c 多连接加速（自动安装） | `false` |
 | `hf_upload` | boolean | 下载完成后上传到 Hugging Face datasets（需 Secret `YTDLP_HF_TOKEN`） | `false` |
 | `hf_repo` | string | HF dataset 仓库 ID（如 `smanx/my-videos`）；留空则用 Secret `YTDLP_HF_REPO` | 空 |
@@ -78,7 +78,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 
 | 需求 | 参数 |
 |---|---|
-| 下载 M3U8，输出标准 MP4 | `transcode=remux`（`none` 时 TS 流会如实命名为 `.ts`） |
+| 下载 M3U8，输出标准 MP4 | `transcode=remux`（快且无损；源编码古怪再考虑 `recode`；`none` 时 TS 流会如实命名为 `.ts`） |
 | 来源是 mkv/webm/ts 等，想无损换成 mp4 封装 | `transcode=remux` |
 | 来源编码古怪（如 mpeg2/wmv），要标准 H.264 MP4 | `transcode=recode` |
 | 大文件多连接加速 | `aria2` 勾选 |
@@ -101,7 +101,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `YTDLP_RETRIES` | 网络重试次数 | `10` |
 | `YTDLP_COOKIES` | Netscape cookies 文件路径 | 空 |
 | `YTDLP_VERBOSE` | 置 1 输出 yt-dlp debug 日志 | 空 |
-| `YTDLP_TRANSCODE` | 转码为 MP4（**依赖 ffmpeg**，未安装则脚本报错退出码 2）：`none` 不转(探测到 TS 流则如实命名 .ts) / `remux` 流拷贝换封装(快) / `recode` 重编码 H.264/AAC(慢)；都会按真实封装修正后缀 | `none` |
+| `YTDLP_TRANSCODE` | 转码为 MP4（**依赖 ffmpeg**，未安装则脚本报错退出码 2）：`none` 不转(探测到 TS 流则如实命名 .ts) / `remux` 流拷贝换封装(快/无损) / `recode` 重编码 H.264+AAC(慢/有损)；都会按真实封装修正后缀 | `none` |
 | `YTDLP_ARIA2` | 启用 aria2c 加速（`1`/`true`/`yes`/`on`） | 关 |
 | `YTDLP_ARIA2_ARGS` | aria2c 附加参数（空格分隔） | `-x 16 -s 16 -k 1M` |
 | `YTDLP_HF_UPLOAD` | 启用上传到 Hugging Face datasets（`1`/`true`/`yes`/`on`） | 关 |
@@ -124,8 +124,8 @@ python tools/ytdlp/download.py "https://www.youtube.com/watch?v=BaW_jenozKc"
 # 覆盖参数
 YTDLP_FORMAT="best[height<=1080]" python tools/ytdlp/download.py
 
-# HLS(m3u8) 真正转成 MP4（流拷贝封装转换，需 PATH 中有 ffmpeg）
-# yt-dlp 原生 remux 后处理 + 脚本按真实封装的兜底修正双保险
+# HLS(m3u8) 转成 MP4（需 PATH 中有 ffmpeg）
+# remux=流拷贝换封装（快、无损）；recode=重编码 H.264/AAC（慢、有损，救不兼容的源）
 YTDLP_TRANSCODE=remux python tools/ytdlp/download.py "https://example.com/video/index.m3u8"
 
 # aria2 多连接加速（需本机 PATH 中已有 aria2c）
@@ -186,7 +186,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 - **大播放列表/频道**：首次会解析两遍（先查档案再下载），`YTDLP_PLAYLIST_END` 可限制规模。
 - **时区**：cron 使用 UTC，默认 `0 18 * * *` = 北京时间 02:00。
 - **超时**：job `timeout-minutes: 360` 为 GitHub 托管 runner 上限，特大任务需拆分。
-- **转码模式**（`YTDLP_TRANSCODE`）：`remux` = 换 mp4 封装且流直接拷贝（秒级、无损，源编码不兼容 mp4 时 ffmpeg 报错）；`recode` = 换 mp4 封装并重编码（视频 H.264、音频 AAC，慢但任何来源都能得到标准 MP4）；`none` = 不转码。**转换依赖 ffmpeg**：yt-dlp 的 remux/recode 本身就是调用 ffmpeg（等价 CLI 的 `--remux-video` / `--recode-video`），workflow 会在运行前确保 ffmpeg 可用；**本地运行必须自备 ffmpeg**，缺失时脚本直接报错并以退出码 2 结束（不会下半天最后给你一个 TS）。**三种模式下脚本还会用 ffprobe 探测每个产物文件的真实封装格式**（ffprobe 缺失时退化为 TS 包头嗅探）：内容是 TS 流但扩展名是 `.mp4` 的（HLS/m3u8 在缺 ffmpeg 的环境里的典型产物）——`none` 如实改名为 `.ts`，`remux`/`recode` 真正转成 MP4（转换失败回退保留 `.ts`）；内容是 MP4 却叫 `.ts` 的改回 `.mp4`；名实相符的文件一律不动。注意：recode 重编码耗时较长，大视频留意 6 小时 job 上限。
+- **转码模式**（`YTDLP_TRANSCODE`）：三者语义不同——`remux` = 换 mp4 封装且**流直接拷贝**（秒级、无损、码率与体积基本不变；源编码不兼容 mp4 时 ffmpeg 报错）；`recode` = **重编码**为 H.264/AAC（慢、有损、体积与耗时都会明显变化，用于源编码不兼容 MP4 的场景）；`none` = 不转码。**转换依赖 ffmpeg**：yt-dlp 的 remux/recode 本身就是调用 ffmpeg（等价 CLI 的 `--remux-video` / `--recode-video`），workflow 会在运行前确保 ffmpeg 可用；**本地运行必须自备 ffmpeg**，缺失时脚本直接报错并以退出码 2 结束（不会下半天最后给你一个 TS）。**注意一个 yt-dlp 的坑**：HLS/m3u8 的格式 ext 通常是 `mp4`，原生 remux/recode 后处理器会按扩展名判断「已是 mp4」而跳过，实际转换落在 FixupM3u8 上——它只做流拷贝，导致 recode 名不副实（两种模式输出一模一样）。因此 recode 模式下脚本会关掉 yt-dlp 的 fixup，让 TS 内容保留到下载后的探测层**真正重编码**。**三种模式下脚本都会用 ffprobe 探测每个产物文件的真实封装格式**（ffprobe 缺失时退化为 TS 包头嗅探）：内容是 TS 流但扩展名是 `.mp4` 的——`none` 如实改名为 `.ts`，`remux` 流拷贝转换，`recode` 重编码转换（转换失败回退保留 `.ts`）；内容是 MP4 却叫 `.ts` 的改回 `.mp4`；名实相符的文件一律不动。注意：recode 重编码耗时较长，大视频留意 6 小时 job 上限。
 - **aria2**：勾选后 workflow 自动安装；本地运行需 PATH 中已有 `aria2c`，否则脚本告警并回退内置下载器。aria2 主要加速直链/分片下载，HLS(m3u8) 仍走 yt-dlp 内置或 ffmpeg 下载器。
 - **产物留存**：ytdlp **不上传 GitHub Artifact**（制品存储按套餐限额：Free 500 MB / Pro 1 GB / Team 2 GB / Enterprise 50 GB，与 Packages 共享且不支持提升）——runner 是临时的，需要文件就启用 `hf_upload` 传到 HF datasets，或本地运行；青龙面板仍用 Artifact 留存数据。
 
