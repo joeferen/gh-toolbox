@@ -1,6 +1,6 @@
 # gh-toolbox
 
-GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 Python 脚本控制一个 CLI 工具，由独立 workflow 调度（手动输入 / 定时 / 文件变更触发），产物以 Actions Artifact 分发。yt-dlp 是第一个入驻的批处理工具，青龙面板是第一个入驻的服务型工具（长驻进程 + 隧道暴露），后续可继续添加。
+GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 Python 脚本控制一个 CLI 工具，由独立 workflow 调度（手动输入 / 定时 / 文件变更触发），产物按工具需要留存（ytdlp 走 HF datasets 上传，青龙面板走 Artifact）。yt-dlp 是第一个入驻的批处理工具，青龙面板是第一个入驻的服务型工具（长驻进程 + 隧道暴露），后续可继续添加。
 
 ## 工具列表
 
@@ -22,7 +22,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 │   │   ├── requirements.txt       # 该工具专属依赖
 │   │   ├── urls.txt               # 输入清单
 │   │   ├── .ytdlp-archive.txt     # 下载档案（仅单次运行内有效，不写回仓库）
-│   │   └── downloads/             # 输出目录（gitignore，走 Artifact）
+│   │   └── downloads/             # 输出目录（gitignore；留存靠 HF 上传或本地运行）
 │   └── qinglong/
 │       ├── run_panel.py           # 主脚本（入口）：起面板 + CF Tunnel + 保活
 │       ├── requirements.txt       # 无第三方依赖（仅标准库）
@@ -36,10 +36,10 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 
 - 工具脚本自包含：输入清单、档案、输出目录均相对**脚本所在目录**解析，可从任意 cwd 运行。
 - 每个工具一个 workflow，步骤骨架固定：
-  `checkout → setup-python → pip install -r tools/<工具>/requirements.txt → 运行脚本 → upload-artifact`
+  `checkout → setup-python → pip install -r tools/<工具>/requirements.txt → 运行脚本`
 - 触发方式按工具自行选择（`workflow_dispatch` / `schedule` / `push`）；**ytdlp 当前为纯手动触发**，参数在 Run workflow 时填写。
 - 例外：服务型工具（`qinglong`）**不加 `push` 触发**——代码变更就自动拉起一个最长 6 小时的长驻任务没有意义，只手动 / 定时启动。
-- **workflow 不向仓库写任何文件**：产物只进 Artifact，仓库保持只读（`permissions: contents: read`）；需要跨运行保留的状态（下载档案、青龙数据等）随 Artifact 分发或本地留存，不提交回仓库。
+- **workflow 不向仓库写任何文件**：产物按工具自行分发（HF datasets / Artifact / 其他存储），仓库保持只读（`permissions: contents: read`）；需要跨运行保留的状态放工具目录内或随产物分发，不提交回仓库。
 
 ## 新增一个工具
 
@@ -57,7 +57,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 
 1. 编辑 `tools/ytdlp/urls.txt`，填入视频/播放列表/直链/M3U8 URL（每行一个，`#` 注释）。
 2. 打开仓库 **Actions → yt-dlp 下载器 → Run workflow**，按需填写参数（见下表），点 **Run workflow**。
-3. 运行结束后在 **Artifacts** 区下载 `ytdlp-downloads`。
+3. 运行结束后：runner 是临时的，下载的文件**默认不保留**——需要文件就勾选 `hf_upload` 上传到 HF datasets（见下文「上传到 Hugging Face datasets」），或本地运行。日志会打印每个文件的完整路径、大小与耗时。
 4. 勾选 `aria2` 时 workflow 会自动安装 aria2；`transcode` 选 `remux`/`recode` 时用 ffmpeg 转码（runner 自带 ffmpeg）；勾选 `hf_upload` 时下载完成后上传到 Hugging Face datasets（见下文）。
 
 #### 手动触发参数
@@ -176,7 +176,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 - 上传 `tools/ytdlp/downloads/` 全目录到 dataset 仓库；仓库不存在则自动创建（**默认私有**，`YTDLP_HF_PRIVATE=0` 可改公开；已存在的仓库不会改动其可见性）。
 - `hf_path` 指定仓库内的目标子目录（如 `videos/2024` → 文件落在该目录下），留空 = 根路径。
 - 内容未变化的文件不会重复传输（hub 按 hash 去重）。
-- 上传失败会记录错误并以退出码 1 结束（Artifact 仍照常上传）。
+- 上传失败会记录错误并以退出码 1 结束（runner 上的文件不受影响）。
 
 ### 注意事项
 
