@@ -25,7 +25,9 @@
   YTDLP_RETRIES          网络重试次数（默认 10）
   YTDLP_COOKIES           Netscape 格式 cookies 文件路径（可选）
   YTDLP_VERBOSE          置 1 输出 yt-dlp debug 日志
-  YTDLP_TRANSCODE        转码为 MP4：none(默认)/remux(仅换封装,流拷贝)/recode(重编码H.264+AAC,慢)
+  YTDLP_TRANSCODE        转码为 MP4：none(默认)/remux(仅换封装,流拷贝)/recode(重编码H.264+AAC,慢)。
+                         下载完成后脚本会用 ffprobe 探测真实封装并修正：TS 流在 none 下
+                         如实改名为 .ts，在 remux/recode 下真正转成 MP4（而非仅改后缀）
   YTDLP_ARIA2            置 1/true/yes/on 启用 aria2c 多连接加速（未安装则回退内置下载器）
   YTDLP_ARIA2_ARGS       aria2c 附加参数，空格分隔（默认 -x 16 -s 16 -k 1M）
   YTDLP_HF_UPLOAD        置 1/true/yes/on 启用上传到 Hugging Face datasets（默认关）
@@ -39,8 +41,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -249,13 +253,161 @@ def fmt_duration(seconds: float) -> str:
     return f"{hours} 小时 {minutes} 分 {sec} 秒"
 
 
+_TS_EXTS = {".ts", ".mts", ".m2ts"}
+
+
+def probe_container(path: Path) -> str | None:
+    """用 ffprobe 探测文件的真实封装格式（format_name），失败/不可用返回 None。
+
+    yt-dlp 对 HLS(m3u8) 常把 TS 分片拼接后直接命名为 .mp4，扩展名不可信，
+    必须探测内容。ffprobe 只读文件头，秒级完成，大文件无压力。
+    """
+    exe = shutil.which("ffprobe")
+    if not exe:
+        return None
+    try:
+        r = subprocess.run(
+            [exe, "-v", "error", "-print_format", "json", "-show_format", str(path)],
+            capture_output=True, timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        return json.loads(r.stdout.decode("utf-8", "replace"))["format"]["format_name"]
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _unique_path(p: Path) -> Path:
+    """目标名已被占用时追加 -1/-2 后缀，避免覆盖已有文件。"""
+    if not p.exists():
+        return p
+    for i in range(1, 1000):
+        cand = p.with_name(f"{p.stem}-{i}{p.suffix}")
+        if not cand.exists():
+            return cand
+    return p.with_name(f"{p.stem}-{os.getpid()}{p.suffix}")
+
+
+def _ffmpeg_to_mp4(src: Path, dst: Path, recode: bool) -> bool:
+    """ffmpeg 转成 MP4：recode=False 流拷贝封装转换，True 重编码 H.264/AAC。"""
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        return False
+    cmd = [exe, "-y", "-hide_banner", "-loglevel", "error", "-i", str(src)]
+    if recode:
+        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "23",
+                "-c:a", "aac", "-b:a", "160k"]
+    else:
+        cmd += ["-map", "0", "-c", "copy"]
+    cmd += ["-movflags", "+faststart", "-f", "mp4", str(dst)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=21600)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0 and dst.exists() and dst.stat().st_size > 0
+
+
+def _sniff_ts(path: Path) -> bool:
+    """无 ffprobe 时的内容兜底嗅探：MPEG-TS 每包 188 字节、包头固定 0x47。"""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(377)
+    except OSError:
+        return False
+    return len(head) >= 377 and head[0] == 0x47 and head[188] == 0x47 and head[376] == 0x47
+
+
+def fix_mislabeled_files(files: list, transcode: str) -> list:
+    """按真实封装格式修正本次产物的后缀/封装，返回修正后的 (路径, 大小) 列表。
+
+    背景：HLS(m3u8) 下载常产出「内容是 TS 流、扩展名是 .mp4」的文件（环境
+    缺 ffmpeg 时 yt-dlp 不做 fixup，直接保留拼接的 TS），而 yt-dlp 的
+    FFmpegVideoRemuxer 只按扩展名判断（源已是 .mp4 就跳过），导致选了
+    remux 实际什么都没转。规则：
+      - 内容是 TS：remux/recode -> 真正转 MP4（流拷贝；recode 失败再试流拷贝）；
+        none -> 如实改名为 .ts；转换失败一律回退为保留 .ts（数据不丢）
+      - 内容是 MP4 但扩展名是 .ts 类：改名为 .mp4（如实标注，非转码）
+      - 其余（名实相符）不动
+    探测优先 ffprobe；ffprobe 缺失时退化为 TS 包头嗅探（无需外部工具，
+    但此时无法识别「MP4 内容被命名成 .ts」的情况）。
+    """
+    if not files:
+        return files
+    if shutil.which("ffprobe") is None and not fix_mislabeled_files._warned:
+        fix_mislabeled_files._warned = True
+        log("未检测到 ffprobe，改用 TS 包头嗅探判断格式（仅能识别 TS 流，转换功能需安装 ffmpeg）")
+    out = []
+    for path, size in files:
+        fmt = probe_container(path)
+        if not fmt and _sniff_ts(path):
+            fmt = "mpegts"
+        if not fmt:
+            out.append((path, size))
+            continue
+        ext = path.suffix.lower()
+        is_ts = "mpegts" in fmt
+        is_mp4 = "mov" in fmt or "mp4" in fmt
+
+        if is_ts and transcode in ("remux", "recode") and shutil.which("ffmpeg"):
+            action = "重编码" if transcode == "recode" else "封装转换(流拷贝)"
+            log(f"探测到 TS 流（当前扩展名 {ext or '无'}）: {path.name} -> {action}为 MP4")
+
+            def convert_once(recode: bool) -> Path | None:
+                # 先转到临时名再归位：源文件自己常占着目标名（如 video.mp4 是 TS）
+                desired = path.with_suffix(".mp4")
+                tmp = _unique_path(path.with_name(path.stem + ".converting.mp4"))
+                if not _ffmpeg_to_mp4(path, tmp, recode=recode):
+                    tmp.unlink(missing_ok=True)
+                    return None
+                if desired == path:
+                    path.unlink()  # 目标名就是源文件自己：删源后才能归位
+                if desired.exists():
+                    return tmp  # 目标名被其他文件占用，保留临时唯一名
+                tmp.rename(desired)
+                return desired
+
+            dst = convert_once(recode=(transcode == "recode"))
+            if not dst and transcode == "recode":
+                log("重编码失败，尝试流拷贝封装转换（无损）")
+                dst = convert_once(recode=False)
+            if dst:
+                if dst != path:
+                    path.unlink(missing_ok=True)  # 归位占用源名时 convert_once 已删过源
+                log(f"转换完成: {dst.name}（{human_size(dst.stat().st_size)}）")
+                out.append((dst, dst.stat().st_size))
+                continue
+            log("转换为 MP4 失败，保留 TS 原始数据")
+            transcode = "none"  # 后续文件同批失败大概率同样失败，直接走改名兜底
+
+        if is_ts and ext not in _TS_EXTS:
+            dst = _unique_path(path.with_suffix(".ts"))
+            path.rename(dst)
+            log(f"探测到 TS 流但扩展名为 {ext or '无'}，已如实改名为: {dst.name}")
+            out.append((dst, size))
+        elif is_mp4 and ext in _TS_EXTS:
+            dst = _unique_path(path.with_suffix(".mp4"))
+            path.rename(dst)
+            log(f"探测到 MP4 封装但扩展名为 {ext}，已如实改名为: {dst.name}")
+            out.append((dst, size))
+        else:
+            out.append((path, size))
+    return out
+
+
+fix_mislabeled_files._warned = False
+
+
 def report_downloads(out_root: Path, archive_path: Path, t0: float,
-                     elapsed: float, reported: set) -> list:
+                     elapsed: float, reported: set, transcode: str = "none") -> list:
     """报告本次下载窗口内产出/更新的文件：完整路径、大小、耗时。
 
     以 st_mtime >= t0 判定文件归属（下载/合并/转码都会刷新 mtime，
     因此直链、HLS、合并、recode 的最终文件都能被覆盖到）；
     已报告过的文件不重复报告；下载档案本身不算产物。
+    报告前先按真实封装格式修正 TS/MP4 后缀（见 fix_mislabeled_files）。
     """
     if not out_root.is_dir():
         return []
@@ -273,6 +425,7 @@ def report_downloads(out_root: Path, archive_path: Path, t0: float,
             continue
         reported.add(p)
         found.append((p, stat.st_size))
+    found = fix_mislabeled_files(found, transcode)
     if len(found) == 1:
         p, size = found[0]
         log(f"下载完成: {p}（{human_size(size)}，耗时 {fmt_duration(elapsed)}）")
@@ -329,6 +482,10 @@ def main() -> int:
         return 0
 
     opts = build_opts()
+    # 归一化的转码模式（build_opts 里未识别值只告警），用于下载后的后缀修正
+    transcode = env("YTDLP_TRANSCODE", "none").lower()
+    if transcode not in ("remux", "recode"):
+        transcode = "none"
     archive_path = Path(env("YTDLP_ARCHIVE") or TOOL_DIR / ".ytdlp-archive.txt")
     archive = load_archive(archive_path)
     log(f"下载档案 {archive_path} 已有 {len(archive)} 条记录")
@@ -390,7 +547,7 @@ def main() -> int:
                 if key:
                     archive.add(key)
                     save_archive(archive_path, archive)
-                total_files += len(report_downloads(out_root, archive_path, t0, elapsed, reported))
+                total_files += len(report_downloads(out_root, archive_path, t0, elapsed, reported, transcode))
                 ok.append(url)
                 continue
 
@@ -420,7 +577,7 @@ def main() -> int:
             for key in keys:
                 archive.add(key)
             save_archive(archive_path, archive)
-            total_files += len(report_downloads(out_root, archive_path, t0, elapsed, reported))
+            total_files += len(report_downloads(out_root, archive_path, t0, elapsed, reported, transcode))
             ok.append(url)
 
     # ---- 全部下载完毕：可选上传到 Hugging Face datasets（默认关闭） ----
