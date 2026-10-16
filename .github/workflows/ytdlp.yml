@@ -47,6 +47,11 @@ on:
         description: "输出文件名（不含扩展名，如 myvideo；也可传含 % 的模板如 %(title)s）；留空用默认命名"
         required: false
         default: ""
+      headers:
+        description: '自定义请求头（单行 JSON，如 {"Referer":"https://example.com/"}；本地运行也支持每行 Name: Value）；留空不用'
+        required: false
+        default: ""
+        type: string
 
 # 同一分支不并发跑，排队执行
 concurrency:
@@ -130,6 +135,7 @@ jobs:
           YTDLP_TRANSCODE: ${{ github.event.inputs.transcode }}
           YTDLP_ARIA2: ${{ github.event.inputs.aria2 }}
           YTDLP_RENAME: ${{ github.event.inputs.rename }}
+          YTDLP_HEADERS: ${{ github.event.inputs.headers }}
           YTDLP_HF_UPLOAD: ${{ github.event.inputs.hf_upload }}
           YTDLP_HF_REPO: ${{ github.event.inputs.hf_repo || secrets.YTDLP_HF_REPO }}
           YTDLP_HF_PATH: ${{ github.event.inputs.hf_path }}

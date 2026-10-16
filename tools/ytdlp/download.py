@@ -24,6 +24,10 @@
   YTDLP_CONCURRENT_FRAG  分片并发数（默认 4）
   YTDLP_RETRIES          网络重试次数（默认 10）
   YTDLP_COOKIES           Netscape 格式 cookies 文件路径（可选）
+  YTDLP_HEADERS           自定义请求头，覆盖到所有请求（合并覆盖 yt-dlp 默认头）。
+                          两种格式：JSON 对象 {"Referer":"https://..."}（推荐，Actions
+                          单行输入框可用）；或每行一个 Name: Value（# 为注释）。
+                          头部里带 Cookie 也会被自动加载为 cookies。格式错误退出码 2
   YTDLP_VERBOSE          置 1 输出 yt-dlp debug 日志
   YTDLP_TRANSCODE        转码为 MP4（依赖 ffmpeg，缺失则报错退出码 2）：
                          none(默认)=不转码，探测到 TS 流如实命名为 .ts
@@ -47,6 +51,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -179,6 +184,46 @@ def effective_template() -> str:
     if rename.lower().endswith(tuple(f".{e}" for e in MEDIA_EXTS)):
         rename = rename[: rename.rfind(".")]
     return f"{rename}.%(ext)s"
+
+
+# RFC 7230 合法的头部字段名（token）
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+
+def parse_headers(raw: str) -> dict:
+    """解析自定义请求头，返回 {名称: 值}。
+
+    支持两种格式（自动识别）：
+      1. JSON 对象：{"Referer": "https://example.com/", "User-Agent": "..."}
+         （Actions 输入框是单行的，推荐用这个）
+      2. 每行一个 'Name: Value'（curl -H 风格，# 开头为注释，空行忽略）
+    格式错误抛 ValueError（头部名含非法字符也视为错误）。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except ValueError as exc:
+            raise ValueError(f"JSON 解析失败: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("JSON 顶层必须是对象，如 {\"Referer\": \"https://example.com/\"}")
+        headers = {str(k): str(v) for k, v in data.items()}
+    else:
+        headers = {}
+        for lineno, line in enumerate(raw.splitlines(), 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" not in line:
+                raise ValueError(f"第 {lineno} 行缺少冒号: {line!r}（格式为 Name: Value）")
+            name, _, value = line.partition(":")
+            headers[name.strip()] = value.strip()
+    for name in headers:
+        if not _HEADER_NAME_RE.match(name):
+            raise ValueError(f"非法的头部名: {name!r}（只能含字母数字和 !#$%&'*+-.^_`|~）")
+    return headers
 
 
 def build_opts() -> dict:
@@ -492,6 +537,19 @@ def main() -> int:
         return 0
 
     opts = build_opts()
+
+    # 自定义请求头（手动触发/本地运行填写）。格式错误直接失败：默默丢头只会
+    # 以 403/401 的形态在下载时才暴露，那时更难定位
+    try:
+        custom_headers = parse_headers(env("YTDLP_HEADERS"))
+    except ValueError as exc:
+        log(f"错误: YTDLP_HEADERS 格式不正确: {exc}")
+        return 2
+    if custom_headers:
+        opts["http_headers"] = custom_headers
+        # 只打印头部名，值可能含 Cookie/Token 等敏感信息
+        log(f"自定义请求头 {len(custom_headers)} 个: {', '.join(custom_headers)}")
+
     # 归一化的转码模式（build_opts 里未识别值只告警），用于下载后的后缀修正
     transcode = env("YTDLP_TRANSCODE", "none").lower()
     if transcode not in ("remux", "recode"):
