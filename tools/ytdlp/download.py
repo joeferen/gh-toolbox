@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""yt-dlp 批量下载脚本（由 GitHub Actions 调用，也可本地运行）。
+"""yt-dlp 批量下载脚本（gh-toolbox 的 ytdlp 工具，由 GitHub Actions 调用，也可本地运行）。
+
+本脚本自包含：urls.txt、下载档案、downloads/ 输出目录均相对脚本所在目录解析，
+可从任意工作目录运行。
 
 工作方式：
-  1. 读取下载目标：环境变量 YTDLP_URLS 优先，其次仓库根目录 urls.txt，
-     也支持命令行直接传 URL（python scripts/download.py <url> ...）
+  1. 读取下载目标：环境变量 YTDLP_URLS 优先，其次本工具目录下的 urls.txt，
+     也支持命令行直接传 URL（python tools/ytdlp/download.py <url> ...）
   2. 调用 yt-dlp Python API 执行下载（格式/封装/并发等通过环境变量控制）
   3. 维护下载档案（默认 .ytdlp-archive.txt），避免定时任务重复下载
 
@@ -33,8 +36,11 @@ try:
     from yt_dlp import YoutubeDL
     from yt_dlp.utils import DownloadError
 except ImportError:  # 本地忘装依赖时给出明确提示
-    sys.stderr.write("缺少依赖 yt-dlp，请先执行: pip install -r requirements.txt\n")
+    sys.stderr.write("缺少依赖 yt-dlp，请先执行: pip install -r tools/ytdlp/requirements.txt\n")
     sys.exit(2)
+
+# 本工具目录：urls.txt / 档案 / 输出目录都相对它解析
+TOOL_DIR = Path(__file__).resolve().parent
 
 
 def log(msg: str) -> None:
@@ -93,9 +99,9 @@ def load_urls() -> list:
         log("下载目标来源: 环境变量 YTDLP_URLS")
         return parse_urls(from_env)
 
-    urls_file = Path("urls.txt")
+    urls_file = TOOL_DIR / "urls.txt"
     if urls_file.is_file():
-        log("下载目标来源: urls.txt")
+        log(f"下载目标来源: {urls_file}")
         return parse_urls(urls_file.read_text(encoding="utf-8"))
 
     return []
@@ -131,10 +137,13 @@ def info_key(info: dict):
 
 
 def build_opts() -> dict:
-    output_dir = env("YTDLP_OUTPUT_DIR", "downloads")
+    # 相对路径基于工具目录解析，绝对路径原样使用
+    output_dir = Path(env("YTDLP_OUTPUT_DIR", "downloads"))
+    if not output_dir.is_absolute():
+        output_dir = TOOL_DIR / output_dir
     template = env("YTDLP_TEMPLATE", "%(title)s [%(id)s].%(ext)s")
     opts = {
-        "outtmpl": output_dir.rstrip("/\\") + "/" + template,
+        "outtmpl": output_dir.as_posix().rstrip("/") + "/" + template,
         "format": env("YTDLP_FORMAT", "bv*+ba/b"),
         "merge_output_format": env("YTDLP_MERGE_FORMAT", "mp4"),
         "concurrent_fragments": env_int("YTDLP_CONCURRENT_FRAG", 4),
@@ -171,7 +180,7 @@ def main() -> int:
         return 0
 
     opts = build_opts()
-    archive_path = Path(env("YTDLP_ARCHIVE", ".ytdlp-archive.txt"))
+    archive_path = Path(env("YTDLP_ARCHIVE") or TOOL_DIR / ".ytdlp-archive.txt")
     archive = load_archive(archive_path)
     log(f"下载档案 {archive_path} 已有 {len(archive)} 条记录")
 

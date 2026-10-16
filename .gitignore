@@ -1,8 +1,9 @@
-# 下载产物（由 GitHub Actions Artifact 分发）
-downloads/
+# 各工具的输出目录（由 GitHub Actions Artifact 分发）
+tools/*/downloads/
 
 # cookies 等本地敏感文件（不要提交）
 cookies.txt
+tools/*/cookies.txt
 
 __pycache__/
 *.pyc

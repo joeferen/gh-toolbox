@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       urls:
-        description: "下载目标（视频/播放列表 URL，每行一个；留空则使用仓库中的 urls.txt）"
+        description: "下载目标（视频/播放列表 URL，每行一个；留空则使用 tools/ytdlp/urls.txt）"
         required: false
         default: ""
       format:
@@ -21,14 +21,12 @@ on:
   schedule:
     - cron: "0 18 * * *"
 
-  # urls.txt 或脚本变更时立即执行
+  # 本工具的文件变更时立即执行
   push:
     branches: [main]
     paths:
-      - "urls.txt"
-      - "scripts/download.py"
-      - "requirements.txt"
-      - ".github/workflows/yt-dlp.yml"
+      - "tools/ytdlp/**"
+      - ".github/workflows/ytdlp.yml"
 
 # 同一分支不并发跑，排队执行
 concurrency:
@@ -36,14 +34,14 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # 回写下载档案 .ytdlp-archive.txt
+  contents: write # 回写下载档案
 
 jobs:
   download:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      YTDLP_ARCHIVE: .ytdlp-archive.txt
+      YTDLP_ARCHIVE: tools/ytdlp/.ytdlp-archive.txt
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -53,11 +51,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: tools/ytdlp/requirements.txt
 
       - name: 安装依赖（yt-dlp 保持最新）
         run: |
           python -m pip install --upgrade pip
-          pip install -U -r requirements.txt
+          pip install -U -r tools/ytdlp/requirements.txt
           yt-dlp --version
           ffmpeg -version | head -n 1
 
@@ -76,14 +75,14 @@ jobs:
           YTDLP_URLS: ${{ github.event.inputs.urls }}
           YTDLP_FORMAT: ${{ github.event.inputs.format }}
           YTDLP_PLAYLIST_END: ${{ github.event.inputs.playlist_end }}
-        run: python scripts/download.py
+        run: python tools/ytdlp/download.py
 
       - name: 上传下载产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ytdlp-downloads
-          path: downloads/
+          path: tools/ytdlp/downloads/
           retention-days: 7
           if-no-files-found: warn
           compression-level: 0
@@ -94,7 +93,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .ytdlp-archive.txt 2>/dev/null || true
+          git add tools/ytdlp/.ytdlp-archive.txt 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "chore(ytdlp): 更新下载档案 [skip ci]"
             git push
