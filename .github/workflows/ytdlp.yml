@@ -106,6 +106,8 @@ jobs:
           fi
 
       # GitHub Action 控制 Python 脚本的入口：inputs -> 环境变量 -> 脚本
+      # 产物留存：runner 是临时的，文件默认不保留；需要文件就勾选 hf_upload
+      # 上传到 HF datasets（或本地运行），不再上传 GitHub Artifact
       - name: 运行下载脚本
         env:
           YTDLP_URLS: ${{ github.event.inputs.urls }}
@@ -119,13 +121,3 @@ jobs:
           YTDLP_HF_PATH: ${{ github.event.inputs.hf_path }}
           YTDLP_HF_TOKEN: ${{ secrets.YTDLP_HF_TOKEN }}
         run: python tools/ytdlp/download.py
-
-      - name: 上传下载产物
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ytdlp-downloads
-          path: tools/ytdlp/downloads/
-          retention-days: 7
-          if-no-files-found: warn
-          compression-level: 0
