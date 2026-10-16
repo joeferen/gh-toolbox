@@ -31,12 +31,20 @@ on:
         default: false
         type: boolean
       hf_upload:
-        description: "下载完成后上传到 Hugging Face datasets（需配 Secret HF_TOKEN）"
+        description: "下载完成后上传到 Hugging Face datasets（需配 Secret YTDLP_HF_TOKEN）"
         required: false
         default: false
         type: boolean
       hf_repo:
-        description: "HF dataset 仓库 ID（用户名/数据集名，如 smanx/my-videos）；留空则用 Secret HF_REPO"
+        description: "HF dataset 仓库 ID（用户名/数据集名，如 smanx/my-videos）；留空则用 Secret YTDLP_HF_REPO"
+        required: false
+        default: ""
+      hf_path:
+        description: "上传到 HF 数据集仓库内的子目录（如 videos/2024），留空 = 根路径"
+        required: false
+        default: ""
+      rename:
+        description: "输出文件名（不含扩展名，如 myvideo；也可传含 % 的模板如 %(title)s）；留空用默认命名"
         required: false
         default: ""
 
@@ -105,9 +113,11 @@ jobs:
           YTDLP_PLAYLIST_END: ${{ github.event.inputs.playlist_end }}
           YTDLP_TRANSCODE: ${{ github.event.inputs.transcode }}
           YTDLP_ARIA2: ${{ github.event.inputs.aria2 }}
+          YTDLP_RENAME: ${{ github.event.inputs.rename }}
           YTDLP_HF_UPLOAD: ${{ github.event.inputs.hf_upload }}
-          YTDLP_HF_REPO: ${{ github.event.inputs.hf_repo || secrets.HF_REPO }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          YTDLP_HF_REPO: ${{ github.event.inputs.hf_repo || secrets.YTDLP_HF_REPO }}
+          YTDLP_HF_PATH: ${{ github.event.inputs.hf_path }}
+          YTDLP_HF_TOKEN: ${{ secrets.YTDLP_HF_TOKEN }}
         run: python tools/ytdlp/download.py
 
       - name: 上传下载产物

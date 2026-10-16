@@ -16,6 +16,7 @@
   YTDLP_URLS             下载目标，换行或逗号分隔（优先于 urls.txt）
   YTDLP_OUTPUT_DIR       输出目录（默认 downloads）
   YTDLP_TEMPLATE         输出文件名模板（默认 %(title)s [%(id)s].%(ext)s）
+  YTDLP_RENAME            输出文件名（不含扩展名）或含 % 的模板；优先于 YTDLP_TEMPLATE
   YTDLP_FORMAT           格式表达式（默认 bv*+ba/b）
   YTDLP_MERGE_FORMAT     合并封装格式（默认 mp4）
   YTDLP_ARCHIVE          下载档案路径（默认 .ytdlp-archive.txt）
@@ -30,7 +31,8 @@
   YTDLP_HF_UPLOAD        置 1/true/yes/on 启用上传到 Hugging Face datasets（默认关）
   YTDLP_HF_REPO          HF dataset 仓库 ID（用户名/数据集名，如 smanx/my-videos）
   YTDLP_HF_PRIVATE       创建仓库时是否私有，1=私有(默认)/0=公开
-  HF_TOKEN               Hugging Face 访问令牌（也可本地 hf auth login 替代）
+  YTDLP_HF_PATH          上传到数据集仓库内的子目录（如 videos/2024），留空=根路径
+  YTDLP_HF_TOKEN         Hugging Face 访问令牌（带工具前缀，避免多工具 token 混用）
 
 退出码：0 = 全部成功/无需下载；1 = 存在失败项；2 = 缺少依赖。
 """
@@ -147,12 +149,38 @@ def info_key(info: dict):
     return f"{extractor} {video_id}"
 
 
+# 常见媒体扩展名（YTDLP_RENAME 剥扩展名用）
+MEDIA_EXTS = ("mp4", "mkv", "webm", "mov", "m4v", "flv", "avi", "wmv", "ts", "m2ts",
+              "mpg", "mpeg", "3gp", "m4a", "mp3", "aac", "opus", "ogg", "wav", "flac")
+# 模板含任一标记即认为多文件场景下文件名可能唯一
+UNIQUE_MARKERS = ("title", "id", "index", "autonumber", "n_entry", "epoch", "date", "timestamp")
+
+
+def effective_template() -> str:
+    """输出文件名模板：YTDLP_RENAME 优先，其次 YTDLP_TEMPLATE。
+
+    YTDLP_RENAME 取值规则：
+      - 含 %（如 %(title)s）→ 视为模板，缺 %(ext)s 时自动补上
+      - 否则 → 视为字面文件名，剥掉自带的媒体扩展名后补 .%(ext)s
+    """
+    rename = env("YTDLP_RENAME")
+    if not rename:
+        return env("YTDLP_TEMPLATE", "%(title)s [%(id)s].%(ext)s")
+    if "%" in rename:
+        return rename if "%(ext)s" in rename else rename + ".%(ext)s"
+    if rename.lower().endswith(tuple(f".{e}" for e in MEDIA_EXTS)):
+        rename = rename[: rename.rfind(".")]
+    return f"{rename}.%(ext)s"
+
+
 def build_opts() -> dict:
     # 相对路径基于工具目录解析，绝对路径原样使用
     output_dir = Path(env("YTDLP_OUTPUT_DIR", "downloads"))
     if not output_dir.is_absolute():
         output_dir = TOOL_DIR / output_dir
-    template = env("YTDLP_TEMPLATE", "%(title)s [%(id)s].%(ext)s")
+    template = effective_template()
+    if env("YTDLP_RENAME"):
+        log(f"自定义命名模板: {template}")
     opts = {
         "outtmpl": output_dir.as_posix().rstrip("/") + "/" + template,
         "format": env("YTDLP_FORMAT", "bv*+ba/b"),
@@ -255,11 +283,13 @@ def report_downloads(out_root: Path, archive_path: Path, t0: float,
     return found
 
 
-def upload_to_hf(folder: Path, repo_id: str, private: bool) -> str:
+def upload_to_hf(folder: Path, repo_id: str, private: bool, path_in_repo: str = "") -> str:
     """把 folder 上传到 Hugging Face dataset 仓库，返回仓库页面 URL。
 
+    path_in_repo 为仓库内的目标子目录，空 = 根路径。
     延迟导入 huggingface_hub：纯下载场景不依赖该库。
-    令牌优先取 HF_TOKEN 环境变量，否则用本地 `hf auth login` 缓存。
+    令牌取 YTDLP_HF_TOKEN 环境变量（带工具前缀，避免多工具 token 混用），
+    未设置时回退到本地 `hf auth login` 缓存。
     """
     try:
         from huggingface_hub import HfApi
@@ -268,13 +298,16 @@ def upload_to_hf(folder: Path, repo_id: str, private: bool) -> str:
             "缺少依赖 huggingface_hub，请先执行: pip install -r tools/ytdlp/requirements.txt"
         )
 
-    api = HfApi()
+    api = HfApi(token=env("YTDLP_HF_TOKEN") or None)
     # 仓库已存在时 exist_ok 不报错，也不会改动已有仓库的可见性
     api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
+    # path_in_repo 归一化：去首尾空白与斜杠，空 = 根路径
+    path_in_repo = (path_in_repo or "").strip().strip("/")
     api.upload_folder(
         repo_id=repo_id,
         repo_type="dataset",
         folder_path=str(folder),
+        path_in_repo=path_in_repo or None,
         commit_message="Upload from gh-toolbox ytdlp",
     )
     return f"https://huggingface.co/datasets/{repo_id}"
@@ -367,6 +400,9 @@ def main() -> int:
                 log(f"没有可下载条目，跳过: {url}")
                 skipped.append(url)
                 continue
+            if not any(m in effective_template() for m in UNIQUE_MARKERS):
+                log(f"注意: 播放列表含 {len(items)} 个条目，但命名模板缺少唯一占位符"
+                    f"（如 %(playlist_index)s、%(title)s），文件可能互相覆盖")
             keys = [k for k in (info_key(e) for e in items) if k]
             if keys and all(k in archive for k in keys):
                 log(f"全部条目已下载过，跳过: {info.get('title') or url}")
@@ -391,6 +427,7 @@ def main() -> int:
     upload_failed = False
     if env("YTDLP_HF_UPLOAD").lower() in ("1", "true", "yes", "on"):
         repo_id = env("YTDLP_HF_REPO")
+        hf_path = env("YTDLP_HF_PATH")
         has_files = out_root.is_dir() and any(p.is_file() for p in out_root.rglob("*"))
         if not repo_id:
             log("启用了 HF 上传但未设置 YTDLP_HF_REPO（格式：用户名/数据集名），跳过上传")
@@ -399,9 +436,11 @@ def main() -> int:
             log(f"输出目录 {out_root} 没有文件，跳过 HF 上传")
         else:
             private = env("YTDLP_HF_PRIVATE", "1").lower() in ("1", "true", "yes", "on")
-            log(f"上传到 Hugging Face datasets: {repo_id}（{'私有' if private else '公开'}仓库）")
+            target = (hf_path.strip("/") + "/") if hf_path else "根路径"
+            log(f"上传到 Hugging Face datasets: {repo_id}"
+                f"（{'私有' if private else '公开'}仓库，目标路径 {target}）")
             try:
-                repo_url = upload_to_hf(out_root, repo_id, private)
+                repo_url = upload_to_hf(out_root, repo_id, private, hf_path)
                 log(f"上传完成: {repo_url}")
             except Exception as exc:
                 log(f"上传到 Hugging Face 失败: {exc}")

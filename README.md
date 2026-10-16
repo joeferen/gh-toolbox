@@ -69,8 +69,10 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `playlist_end` | string | 每个播放列表下载上限，0 不限 | `0` |
 | `transcode` | choice | 转码为 MP4：`none` 不处理 / `remux` 仅换封装(流拷贝,快) / `recode` 重编码 H.264/AAC(慢,兼容最好) | `none` |
 | `aria2` | boolean | 使用 aria2c 多连接加速（自动安装） | `false` |
-| `hf_upload` | boolean | 下载完成后上传到 Hugging Face datasets（需 Secret `HF_TOKEN`） | `false` |
-| `hf_repo` | string | HF dataset 仓库 ID（如 `smanx/my-videos`）；留空则用 Secret `HF_REPO` | 空 |
+| `hf_upload` | boolean | 下载完成后上传到 Hugging Face datasets（需 Secret `YTDLP_HF_TOKEN`） | `false` |
+| `hf_repo` | string | HF dataset 仓库 ID（如 `smanx/my-videos`）；留空则用 Secret `YTDLP_HF_REPO` | 空 |
+| `hf_path` | string | 上传到数据集仓库内的子目录（如 `videos/2024`），留空 = 根路径 | 空 |
+| `rename` | string | 输出文件名（不含扩展名，如 `myvideo`；也可传含 `%` 的模板）；留空用默认命名 | 空 |
 
 常用组合：
 
@@ -90,6 +92,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `YTDLP_URLS` | 下载目标（换行/逗号分隔），优先于 `urls.txt` | 空 |
 | `YTDLP_OUTPUT_DIR` | 输出目录，相对路径基于工具目录解析 | `downloads` |
 | `YTDLP_TEMPLATE` | 输出文件名模板 | `%(title)s [%(id)s].%(ext)s` |
+| `YTDLP_RENAME` | 输出文件名（不含扩展名）或含 `%` 的模板，优先于 `YTDLP_TEMPLATE` | 空 |
 | `YTDLP_FORMAT` | 格式表达式 | `bv*+ba/b` |
 | `YTDLP_MERGE_FORMAT` | 合并封装格式 | `mp4` |
 | `YTDLP_ARCHIVE` | 下载档案路径 | `tools/ytdlp/.ytdlp-archive.txt` |
@@ -104,7 +107,8 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `YTDLP_HF_UPLOAD` | 启用上传到 Hugging Face datasets（`1`/`true`/`yes`/`on`） | 关 |
 | `YTDLP_HF_REPO` | HF dataset 仓库 ID（`用户名/数据集名`） | 空 |
 | `YTDLP_HF_PRIVATE` | 创建仓库时是否私有 | `1`（私有） |
-| `HF_TOKEN` | Hugging Face 令牌（也可本地 `hf auth login` 替代） | 空 |
+| `YTDLP_HF_PATH` | 上传到数据集仓库内的子目录，留空 = 根路径 | 空 |
+| `YTDLP_HF_TOKEN` | Hugging Face 令牌（带工具前缀，避免多工具 token 混用） | 空 |
 
 ### 本地运行
 
@@ -126,8 +130,11 @@ YTDLP_TRANSCODE=remux python tools/ytdlp/download.py "https://example.com/video/
 # aria2 多连接加速（需本机 PATH 中已有 aria2c）
 YTDLP_ARIA2=1 python tools/ytdlp/download.py "https://example.com/big.mp4"
 
-# 下载并上传到 Hugging Face datasets（需 HF_TOKEN 或本机 hf auth login）
-YTDLP_HF_UPLOAD=1 YTDLP_HF_REPO=smanx/my-videos python tools/ytdlp/download.py
+# 自定义输出文件名（不含扩展名）
+YTDLP_RENAME=myvideo python tools/ytdlp/download.py "https://example.com/video"
+
+# 下载并上传到 Hugging Face datasets 的指定子目录（需 YTDLP_HF_TOKEN 或本机 hf auth login）
+YTDLP_HF_UPLOAD=1 YTDLP_HF_REPO=smanx/my-videos YTDLP_HF_PATH=videos/2024 python tools/ytdlp/download.py
 ```
 
 ### cookies（可选）
@@ -144,6 +151,16 @@ base64 -w0 cookies.txt   # 生成单行 base64
 
 `download.py` 每下载完成一个视频就把 `extractor 视频ID` 写入 `.ytdlp-archive.txt`，**单次运行内**重复的 URL、重叠的播放列表条目不会重复下载。注意 workflow 不把该文件写回仓库（仓库只读），runner 也是临时的——每次手动运行都从空档案开始；想要跨运行防重复，就本地运行并保留该文件，或自行把它提交进仓库（脚本读取到即生效）。删除某行即可强制重新下载。
 
+### 重命名输出文件（可选）
+
+默认命名为 `%(title)s [%(id)s].%(ext)s`。想自定义时：
+
+- **简单用法**：传一个不含扩展名的文件名，脚本自动补上实际扩展名。
+  `rename=myvideo` → `myvideo.mp4`（自带扩展名如 `myvideo.mp4` 也会被正确剥掉再补，不会出现 `.mp4.mp4`）。
+- **模板用法**：传含 `%` 的 yt-dlp 模板（缺 `%(ext)s` 会自动补）。
+  `rename=%(playlist_index)s-%(title)s`、`rename=%(uploader)s/%(title)s`（`/` 可建子目录）。
+- **播放列表注意**：多文件场景下模板必须含唯一占位符（`%(playlist_index)s`、`%(title)s`、`%(id)s` 等），否则脚本会告警且文件可能互相覆盖。
+
 ### 上传到 Hugging Face datasets（可选）
 
 全部下载完成后，可把 `downloads/` 整个上传到 HF dataset 仓库（默认关闭）。
@@ -151,12 +168,13 @@ base64 -w0 cookies.txt   # 生成单行 base64
 **配置**：
 
 1. 到 [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) 创建 Token（权限选 `write`）。
-2. 存为仓库 Secret：`HF_TOKEN`（必填）；`HF_REPO`（可选，作为默认仓库 ID）。
-3. Run workflow 时勾选 `hf_upload`，并填写 `hf_repo`（留空则用 Secret `HF_REPO`）。
+2. 存为仓库 Secret：`YTDLP_HF_TOKEN`（必填，带工具前缀避免与其他工具的 token 混用）；`YTDLP_HF_REPO`（可选，作为默认仓库 ID）。
+3. Run workflow 时勾选 `hf_upload`，填写 `hf_repo`（留空则用 Secret `YTDLP_HF_REPO`）和 `hf_path`（留空上传到仓库根路径）。
 
 **行为**：
 
-- 上传 `tools/ytdlp/downloads/` 全目录到 dataset 仓库根路径；仓库不存在则自动创建（**默认私有**，`YTDLP_HF_PRIVATE=0` 可改公开；已存在的仓库不会改动其可见性）。
+- 上传 `tools/ytdlp/downloads/` 全目录到 dataset 仓库；仓库不存在则自动创建（**默认私有**，`YTDLP_HF_PRIVATE=0` 可改公开；已存在的仓库不会改动其可见性）。
+- `hf_path` 指定仓库内的目标子目录（如 `videos/2024` → 文件落在该目录下），留空 = 根路径。
 - 内容未变化的文件不会重复传输（hub 按 hash 去重）。
 - 上传失败会记录错误并以退出码 1 结束（Artifact 仍照常上传）。
 
