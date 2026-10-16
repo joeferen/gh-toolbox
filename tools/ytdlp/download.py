@@ -28,6 +28,10 @@
                           两种格式：JSON 对象 {"Referer":"https://..."}（推荐，Actions
                           单行输入框可用）；或每行一个 Name: Value（# 为注释）。
                           头部里带 Cookie 也会被自动加载为 cookies。格式错误退出码 2
+  YTDLP_IMPERSONATE       浏览器 TLS 指纹伪装（过 Cloudflare 反爬挑战，依赖 curl_cffi，
+                          未安装则报错退出码 2）：1/true/yes/on=伪装 Chrome（推荐），
+                          也可显式指定如 chrome-131、safari、chrome:windows-10；
+                          0/空=关闭（默认）。所有请求（网页/m3u8/分片）都会走伪装
   YTDLP_VERBOSE          置 1 输出 yt-dlp debug 日志
   YTDLP_TRANSCODE        转码为 MP4（依赖 ffmpeg，缺失则报错退出码 2）：
                          none(默认)=不转码，探测到 TS 流如实命名为 .ts
@@ -49,6 +53,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -60,10 +65,16 @@ from pathlib import Path
 
 try:
     from yt_dlp import YoutubeDL
-    from yt_dlp.utils import DownloadError
+    from yt_dlp.utils import DownloadError, YoutubeDLError
 except ImportError:  # 本地忘装依赖时给出明确提示
     sys.stderr.write("缺少依赖 yt-dlp，请先执行: pip install -r tools/ytdlp/requirements.txt\n")
     sys.exit(2)
+
+try:
+    # 浏览器 TLS 指纹伪装（过 Cloudflare 反爬）；老版本 yt-dlp 无此能力
+    from yt_dlp.networking.impersonate import ImpersonateTarget
+except ImportError:
+    ImpersonateTarget = None
 
 # 本工具目录：urls.txt / 档案 / 输出目录都相对它解析
 TOOL_DIR = Path(__file__).resolve().parent
@@ -226,6 +237,18 @@ def parse_headers(raw: str) -> dict:
     return headers
 
 
+def impersonate_target() -> str:
+    """归一化 YTDLP_IMPERSONATE：空/0/false/no/off=关闭；1/true/yes/on=chrome。
+
+    其余取值视为显式的伪装目标（如 safari、chrome-131、chrome:windows-10），
+    原样（小写化）交给 yt-dlp 的 ImpersonateTarget.from_str 解析。
+    """
+    value = env("YTDLP_IMPERSONATE").strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return "chrome"
+    return "" if value in ("", "0", "false", "no", "off") else value
+
+
 def build_opts() -> dict:
     # 相对路径基于工具目录解析，绝对路径原样使用
     output_dir = Path(env("YTDLP_OUTPUT_DIR", "downloads"))
@@ -272,6 +295,16 @@ def build_opts() -> dict:
         opts["fixup"] = "never"
     elif transcode not in ("none", "no", "off", ""):
         log(f"YTDLP_TRANSCODE={transcode} 无法识别，已忽略（可选 none/remux/recode）")
+
+    # 浏览器 TLS 指纹伪装（默认关）：Cloudflare 等反爬靠 TLS 指纹识别机器人，
+    # 开启后所有请求（网页/m3u8/分片）都伪装成真实浏览器的握手特征
+    target = impersonate_target()
+    if target:
+        if ImpersonateTarget is None:
+            log("当前 yt-dlp 版本不支持浏览器指纹伪装，YTDLP_IMPERSONATE 已忽略")
+        else:
+            opts["impersonate"] = ImpersonateTarget.from_str(target)
+            log(f"已启用浏览器指纹伪装(impersonate): {target}（依赖 curl_cffi）")
 
     # aria2c 多连接加速（本机未安装时回退内置下载器）
     if env("YTDLP_ARIA2").lower() in ("1", "true", "yes", "on"):
@@ -550,6 +583,12 @@ def main() -> int:
         # 只打印头部名，值可能含 Cookie/Token 等敏感信息
         log(f"自定义请求头 {len(custom_headers)} 个: {', '.join(custom_headers)}")
 
+    # 指纹伪装依赖 curl_cffi；缺失时提前失败，避免下到一半才被 Cloudflare 拦
+    if impersonate_target() and importlib.util.find_spec("curl_cffi") is None:
+        log("错误: 启用了浏览器指纹伪装(YTDLP_IMPERSONATE)但未安装依赖 curl_cffi")
+        log("      请先执行: pip install -r tools/ytdlp/requirements.txt")
+        return 2
+
     # 归一化的转码模式（build_opts 里未识别值只告警），用于下载后的后缀修正
     transcode = env("YTDLP_TRANSCODE", "none").lower()
     if transcode not in ("remux", "recode"):
@@ -584,7 +623,13 @@ def main() -> int:
 
     ok, skipped, failed = [], [], []
 
-    with YoutubeDL(opts) as ydl:
+    try:
+        ydl = YoutubeDL(opts)
+    except YoutubeDLError as exc:
+        # 典型场景：impersonate 目标不可用（curl_cffi 缺失或版本不受支持）
+        log(f"错误: yt-dlp 初始化失败: {exc}")
+        return 2
+    with ydl:
         for url in urls:
             log(f"解析: {url}")
             try:

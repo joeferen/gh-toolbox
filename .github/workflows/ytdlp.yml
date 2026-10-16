@@ -52,6 +52,11 @@ on:
         required: false
         default: ""
         type: string
+      impersonate:
+        description: 'TLS 指纹伪装，过 Cloudflare 反爬挑战（依赖 curl_cffi，随依赖自动安装）：留空/0=关闭；1 或 chrome=伪装 Chrome；也可填 safari、chrome-131 等'
+        required: false
+        default: ""
+        type: string
 
 # 同一分支不并发跑，排队执行
 concurrency:
@@ -136,6 +141,7 @@ jobs:
           YTDLP_ARIA2: ${{ github.event.inputs.aria2 }}
           YTDLP_RENAME: ${{ github.event.inputs.rename }}
           YTDLP_HEADERS: ${{ github.event.inputs.headers }}
+          YTDLP_IMPERSONATE: ${{ github.event.inputs.impersonate }}
           YTDLP_HF_UPLOAD: ${{ github.event.inputs.hf_upload }}
           YTDLP_HF_REPO: ${{ github.event.inputs.hf_repo || secrets.YTDLP_HF_REPO }}
           YTDLP_HF_PATH: ${{ github.event.inputs.hf_path }}

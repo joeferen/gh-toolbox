@@ -74,6 +74,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `hf_path` | string | 上传到数据集仓库内的子目录（如 `videos/2024`），留空 = 根路径 | 空 |
 | `rename` | string | 输出文件名（不含扩展名，如 `myvideo`；也可传含 `%` 的模板）；留空用默认命名 | 空 |
 | `headers` | string | 自定义请求头，单行 JSON（如 `{"Referer":"https://example.com/"}`）；本地运行也支持每行 `Name: Value`。带 `Cookie` 会自动加载为 cookies；值不会打进日志 | 空 |
+| `impersonate` | string | TLS 指纹伪装，过 Cloudflare 反爬挑战（依赖 curl_cffi，随依赖自动安装）：留空/`0`=关闭；`1` 或 `chrome`=伪装 Chrome；也可填 `safari`、`chrome-131` 等 | 空 |
 
 常用组合：
 
@@ -86,6 +87,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | 上传到 Hugging Face 数据集 | `hf_upload` 勾选 + `hf_repo` 填写 |
 | 只要 1080p | `format=best[height<=1080]` |
 | 站点要 Referer/UA 才放行 | `headers={"Referer":"https://example.com/"}` |
+| 被 Cloudflare 拦（403 anti-bot challenge） | `impersonate=1`（TLS 指纹伪装 Chrome） |
 
 ### 环境变量
 
@@ -103,6 +105,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `YTDLP_RETRIES` | 网络重试次数 | `10` |
 | `YTDLP_COOKIES` | Netscape cookies 文件路径 | 空 |
 | `YTDLP_HEADERS` | 自定义请求头（合并覆盖 yt-dlp 默认头）：JSON 对象 `{"Referer":"https://..."}` 或每行 `Name: Value`；带 `Cookie` 会自动加载为 cookies；格式错误退出码 2 | 空 |
+| `YTDLP_IMPERSONATE` | 浏览器 TLS 指纹伪装（过 Cloudflare 反爬，依赖 curl_cffi，未安装报错退出码 2）：`1`/`true`=伪装 Chrome；也可显式指定 `safari`、`chrome-131`、`chrome:windows-10`；空/`0`=关闭 | 空 |
 | `YTDLP_VERBOSE` | 置 1 输出 yt-dlp debug 日志 | 空 |
 | `YTDLP_TRANSCODE` | 转码为 MP4（**依赖 ffmpeg**，未安装则脚本报错退出码 2）：`none` 不转(探测到 TS 流则如实命名 .ts) / `remux` 流拷贝换封装(快/无损) / `recode` 重编码 H.264+AAC(慢/有损)；都会按真实封装修正后缀 | `none` |
 | `YTDLP_ARIA2` | 启用 aria2c 加速（`1`/`true`/`yes`/`on`） | 关 |
@@ -140,6 +143,9 @@ YTDLP_RENAME=myvideo python tools/ytdlp/download.py "https://example.com/video"
 # 自定义请求头（JSON；也支持每行 Name: Value，值不会打进日志）
 YTDLP_HEADERS='{"Referer":"https://example.com/","User-Agent":"Mozilla/5.0"}' \
   python tools/ytdlp/download.py "https://example.com/video"
+
+# 过 Cloudflare 反爬：TLS 指纹伪装成 Chrome（依赖 curl_cffi，见 requirements.txt）
+YTDLP_IMPERSONATE=1 python tools/ytdlp/download.py "https://surrit.com/xxx/playlist.m3u8"
 
 # 下载并上传到 Hugging Face datasets 的指定子目录（需 YTDLP_HF_TOKEN 或本机 hf auth login）
 YTDLP_HF_UPLOAD=1 YTDLP_HF_REPO=smanx/my-videos YTDLP_HF_PATH=videos/2024 python tools/ytdlp/download.py
@@ -196,6 +202,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 - **转码模式**（`YTDLP_TRANSCODE`）：三者语义不同——`remux` = 换 mp4 封装且**流直接拷贝**（秒级、无损、码率与体积基本不变；源编码不兼容 mp4 时 ffmpeg 报错）；`recode` = **重编码**为 H.264/AAC（慢、有损、体积与耗时都会明显变化，用于源编码不兼容 MP4 的场景）；`none` = 不转码。**转换依赖 ffmpeg**：yt-dlp 的 remux/recode 本身就是调用 ffmpeg（等价 CLI 的 `--remux-video` / `--recode-video`），workflow 会在运行前确保 ffmpeg 可用；**本地运行必须自备 ffmpeg**，缺失时脚本直接报错并以退出码 2 结束（不会下半天最后给你一个 TS）。**注意一个 yt-dlp 的坑**：HLS/m3u8 的格式 ext 通常是 `mp4`，原生 remux/recode 后处理器会按扩展名判断「已是 mp4」而跳过，实际转换落在 FixupM3u8 上——它只做流拷贝，导致 recode 名不副实（两种模式输出一模一样）。因此 recode 模式下脚本会关掉 yt-dlp 的 fixup，让 TS 内容保留到下载后的探测层**真正重编码**。**三种模式下脚本都会用 ffprobe 探测每个产物文件的真实封装格式**（ffprobe 缺失时退化为 TS 包头嗅探）：内容是 TS 流但扩展名是 `.mp4` 的——`none` 如实改名为 `.ts`，`remux` 流拷贝转换，`recode` 重编码转换（转换失败回退保留 `.ts`）；内容是 MP4 却叫 `.ts` 的改回 `.mp4`；名实相符的文件一律不动。注意：recode 重编码耗时较长，大视频留意 6 小时 job 上限。
 - **aria2**：勾选后 workflow 自动安装；本地运行需 PATH 中已有 `aria2c`，否则脚本告警并回退内置下载器。aria2 主要加速直链/分片下载，HLS(m3u8) 仍走 yt-dlp 内置或 ffmpeg 下载器。
 - **自定义请求头**（`YTDLP_HEADERS` / 输入 `headers`）：合并覆盖到所有请求（用户值优先于 yt-dlp 默认头）。格式二选一——单行 JSON 对象（Actions 输入框是单行的，推荐这个），或每行一个 `Name: Value`（本地运行，`#` 为注释）。头部里带 `Cookie` 会被 yt-dlp 自动加载为 cookies，可与 `YTDLP_COOKIES` 任选其一。日志只打印头部**名称**不回显值（值可能含 Token）；格式错误（JSON 坏、缺冒号、非法头部名）直接以退出码 2 失败，不会默默丢头让你在下载时才吃 403。
+- **Cloudflare 反爬 403**（日志出现 `HTTP Error 403 caused by Cloudflare anti-bot challenge`）：站点用 TLS 指纹识别机器人，普通 HTTP 库必然被拦。解法是**浏览器指纹伪装**——输入 `impersonate` 填 `1`（或 `chrome`），脚本会让所有请求（网页/m3u8/分片）伪装成 Chrome 的 TLS 握手特征。依赖 `curl_cffi`（已在 requirements.txt，workflow 自动安装；本地 `pip install -r tools/ytdlp/requirements.txt`），未装时脚本启动即报错退出码 2。也可指定具体目标如 `safari`、`chrome-131`、`chrome:windows-10`。**两种 403 要分清**：① 报错含 `Cloudflare anti-bot challenge` / `cf-mitigated: challenge` → 指纹问题，伪装能解；② 开了伪装后仍 403、页面是 "Sorry, you have been blocked"（WAF 规则封锁，Error 1020）→ 与指纹无关，是站点按 IP/会话拦截——GitHub runner 和大多数 VPS 是机房 IP，会被这类站点直接拉黑，**换家庭宽带本地跑**才是最有效的；同时带上真实浏览器会话（`headers` 里设置视频页 `Referer` + `Cookie`，或配 `YTDLP_COOKIES`）。Cloudflare 策略升级时可能失效，届时更新 yt-dlp/curl_cffi 即可。
 - **产物留存**：ytdlp **不上传 GitHub Artifact**（制品存储按套餐限额：Free 500 MB / Pro 1 GB / Team 2 GB / Enterprise 50 GB，与 Packages 共享且不支持提升）——runner 是临时的，需要文件就启用 `hf_upload` 传到 HF datasets，或本地运行；青龙面板仍用 Artifact 留存数据。
 
 ## qinglong 工具说明

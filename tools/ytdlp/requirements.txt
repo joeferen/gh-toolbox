@@ -3,3 +3,7 @@ yt-dlp
 
 # Hugging Face datasets 上传（仅启用 YTDLP_HF_UPLOAD 时用到）
 huggingface_hub
+
+# 浏览器 TLS 指纹伪装（仅启用 YTDLP_IMPERSONATE 时用到，过 Cloudflare 反爬）。
+# 版本区间须与 yt-dlp 的支持范围匹配（2026.08 起：0.10.x ~ 0.16.x）
+curl_cffi>=0.10,<0.17
