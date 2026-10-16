@@ -8,7 +8,8 @@
   1. 读取下载目标：环境变量 YTDLP_URLS 优先，其次本工具目录下的 urls.txt，
      也支持命令行直接传 URL（python tools/ytdlp/download.py <url> ...）
   2. 调用 yt-dlp Python API 执行下载（格式/封装/并发等通过环境变量控制）
-  3. 维护下载档案（默认 .ytdlp-archive.txt），避免定时任务重复下载
+  3. 维护下载档案（默认 .ytdlp-archive.txt），避免重复下载
+  4. 每个文件下载完成后输出完整路径、大小与耗时
 
 环境变量：
   YTDLP_URLS             下载目标，换行或逗号分隔（优先于 urls.txt）
@@ -34,6 +35,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -192,6 +194,62 @@ def build_opts() -> dict:
     return opts
 
 
+def human_size(num_bytes: int) -> str:
+    """字节数格式化为人类可读大小。"""
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def fmt_duration(seconds: float) -> str:
+    """秒数格式化为人类可读耗时。"""
+    if seconds < 60:
+        return f"{seconds:.1f} 秒"
+    total = int(seconds + 0.5)
+    minutes, sec = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes} 分 {sec} 秒"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} 小时 {minutes} 分 {sec} 秒"
+
+
+def report_downloads(out_root: Path, archive_path: Path, t0: float,
+                     elapsed: float, reported: set) -> list:
+    """报告本次下载窗口内产出/更新的文件：完整路径、大小、耗时。
+
+    以 st_mtime >= t0 判定文件归属（下载/合并/转码都会刷新 mtime，
+    因此直链、HLS、合并、recode 的最终文件都能被覆盖到）；
+    已报告过的文件不重复报告；下载档案本身不算产物。
+    """
+    if not out_root.is_dir():
+        return []
+    found = []
+    for p in sorted(out_root.rglob("*")):
+        if not p.is_file() or p in reported:
+            continue
+        try:
+            if p.resolve() == archive_path.resolve():
+                continue
+            stat = p.stat()
+        except OSError:
+            continue
+        if stat.st_mtime < t0:
+            continue
+        reported.add(p)
+        found.append((p, stat.st_size))
+    if len(found) == 1:
+        p, size = found[0]
+        log(f"下载完成: {p}（{human_size(size)}，耗时 {fmt_duration(elapsed)}）")
+    elif found:
+        for p, size in found:
+            log(f"下载完成: {p}（{human_size(size)}）")
+        log(f"  耗时: {fmt_duration(elapsed)}（以上 {len(found)} 个文件合计）")
+    return found
+
+
 def main() -> int:
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
         print(__doc__)
@@ -211,6 +269,10 @@ def main() -> int:
     archive_path = Path(env("YTDLP_ARCHIVE") or TOOL_DIR / ".ytdlp-archive.txt")
     archive = load_archive(archive_path)
     log(f"下载档案 {archive_path} 已有 {len(archive)} 条记录")
+    out_root = Path(opts["outtmpl"]).parent  # 产物扫描根目录
+    reported: set = set()  # 已报告的产物文件（跨 URL 去重）
+    total_files = 0
+    total_time = 0.0
 
     def on_progress(d: dict) -> None:
         # 每个视频下载完成立即记档：中断/失败也不会重复下载已完成部分
@@ -253,15 +315,19 @@ def main() -> int:
                     log(f"已下载过，跳过: {info.get('title') or url}")
                     skipped.append(url)
                     continue
+                t0 = time.time()
                 try:
                     ydl.download([url])
                 except DownloadError as exc:
                     log(f"下载失败: {url} -> {exc}")
                     failed.append(url)
                     continue
+                elapsed = time.time() - t0
+                total_time += elapsed
                 if key:
                     archive.add(key)
                     save_archive(archive_path, archive)
+                total_files += len(report_downloads(out_root, archive_path, t0, elapsed, reported))
                 ok.append(url)
                 continue
 
@@ -276,19 +342,25 @@ def main() -> int:
                 log(f"全部条目已下载过，跳过: {info.get('title') or url}")
                 skipped.append(url)
                 continue
+            t0 = time.time()
             try:
                 ydl.download([url])
             except DownloadError as exc:
                 log(f"下载失败（已完成部分已记档）: {url} -> {exc}")
                 failed.append(url)
                 continue
+            elapsed = time.time() - t0
+            total_time += elapsed
             for key in keys:
                 archive.add(key)
             save_archive(archive_path, archive)
+            total_files += len(report_downloads(out_root, archive_path, t0, elapsed, reported))
             ok.append(url)
 
     log("=" * 48)
     log(f"任务结束: 成功 {len(ok)}，跳过 {len(skipped)}，失败 {len(failed)}")
+    if total_files:
+        log(f"共下载 {total_files} 个文件，下载总耗时 {fmt_duration(total_time)}")
     for url in failed:
         log(f"  失败: {url}")
     return 1 if failed else 0
