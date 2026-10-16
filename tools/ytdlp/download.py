@@ -26,8 +26,10 @@
   YTDLP_COOKIES           Netscape 格式 cookies 文件路径（可选）
   YTDLP_VERBOSE          置 1 输出 yt-dlp debug 日志
   YTDLP_TRANSCODE        转码为 MP4：none(默认)/remux(仅换封装,流拷贝)/recode(重编码H.264+AAC,慢)。
-                         下载完成后脚本会用 ffprobe 探测真实封装并修正：TS 流在 none 下
-                         如实改名为 .ts，在 remux/recode 下真正转成 MP4（而非仅改后缀）
+                         依赖 ffmpeg（yt-dlp 的 remux/recode 即调用 ffmpeg）；未安装时脚本直接
+                         报错退出(退出码 2)，不会默默产出 TS。下载完成后脚本还会用 ffprobe 探测
+                         真实封装并修正：TS 流在 none 下如实改名为 .ts，在 remux/recode 下真正
+                         转成 MP4（而非仅改后缀）
   YTDLP_ARIA2            置 1/true/yes/on 启用 aria2c 多连接加速（未安装则回退内置下载器）
   YTDLP_ARIA2_ARGS       aria2c 附加参数，空格分隔（默认 -x 16 -s 16 -k 1M）
   YTDLP_HF_UPLOAD        置 1/true/yes/on 启用上传到 Hugging Face datasets（默认关）
@@ -486,6 +488,13 @@ def main() -> int:
     transcode = env("YTDLP_TRANSCODE", "none").lower()
     if transcode not in ("remux", "recode"):
         transcode = "none"
+    if transcode != "none" and not shutil.which("ffmpeg"):
+        # yt-dlp 的 FFmpegVideoRemuxer/Convertor 和脚本兜底转换都走 ffmpeg，
+        # 没有它不可能得到 MP4——提前失败，避免下半天拿到 TS
+        log("错误: 选择了转码(remux/recode)但未在 PATH 中检测到 ffmpeg")
+        log("      yt-dlp 的 remux/recode 本身就是调用 ffmpeg 完成转换，缺失时无法得到 MP4")
+        log("      GitHub Actions 运行由 workflow 自动保证；本地运行请先安装 ffmpeg 并加入 PATH")
+        return 2
     archive_path = Path(env("YTDLP_ARCHIVE") or TOOL_DIR / ".ytdlp-archive.txt")
     archive = load_archive(archive_path)
     log(f"下载档案 {archive_path} 已有 {len(archive)} 条记录")

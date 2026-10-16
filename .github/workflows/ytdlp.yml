@@ -78,7 +78,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -U -r tools/ytdlp/requirements.txt
           yt-dlp --version
-          ffmpeg -version | head -n 1
 
       # 勾选 aria2 输入时按需安装（ubuntu-latest 镜像一般已带，缺失才装）
       - name: 安装 aria2（勾选加速时）
@@ -104,6 +103,21 @@ jobs:
           else
             echo "未配置 secret YTDLP_COOKIES，跳过（无需登录态的下载不受影响）"
           fi
+
+      # ffmpeg 是转码(remux/recode)与格式合并的硬依赖：yt-dlp 的 remux/recode
+      # 本身就是调用 ffmpeg。runner 镜像一般已带，缺失则自动安装，装完强制校验
+      - name: 确保 ffmpeg 可用
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            echo "未检测到 ffmpeg，正在安装..."
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          fi
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            echo "::error::ffmpeg 仍不可用，remux/recode 转码与双流合并都无法进行"
+            exit 1
+          fi
+          ffmpeg -version | head -n 1
 
       # GitHub Action 控制 Python 脚本的入口：inputs -> 环境变量 -> 脚本
       # 产物留存：runner 是临时的，文件默认不保留；需要文件就勾选 hf_upload
