@@ -1,0 +1,95 @@
+name: 青龙面板 + CF Tunnel
+
+on:
+  # 手动触发：面板是长驻服务，只建议手动/定时启动
+  workflow_dispatch:
+    inputs:
+      run_minutes:
+        description: "保活时长（分钟，0 = 一直跑到任务被取消或达到 360 分钟上限）"
+        required: false
+        default: "360"
+      cf_mode:
+        description: "CF Tunnel 模式：quick = 免密临时隧道（trycloudflare.com）；token = 命名隧道（需 secret CF_TUNNEL_TOKEN）"
+        required: false
+        default: "quick"
+        type: choice
+        options:
+          - quick
+          - token
+      ql_image:
+        description: "青龙面板 Docker 镜像（依赖兼容问题可换 whyour/qinglong:debian）"
+        required: false
+        default: "whyour/qinglong:latest"
+      persist_data:
+        description: "结束后把 data/ 数据目录提交回仓库（默认否，数据以 Artifact 分发）"
+        type: boolean
+        default: false
+
+  # 定时触发示例：每天北京时间 06:00 起一个最长 6 小时的面板。默认关闭，需要时取消注释
+  # schedule:
+  #   - cron: "0 22 * * *"   # UTC 22:00 = 北京时间 06:00
+
+# 面板是单实例服务：重复触发时取消旧运行，避免端口/数据目录冲突
+concurrency:
+  group: qinglong-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # persist_data=true 时回写数据目录
+
+jobs:
+  panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/qinglong/requirements.txt
+
+      - name: 安装依赖
+        run: pip install -r tools/qinglong/requirements.txt
+
+      # 入口：起青龙 + CF Tunnel + 保活到 run_minutes，退出前自动清理容器与 cloudflared
+      - name: 启动青龙面板并暴露 CF Tunnel
+        env:
+          CF_MODE: ${{ github.event.inputs.cf_mode || 'quick' }}
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
+          RUN_MINUTES: ${{ github.event.inputs.run_minutes || '360' }}
+          QL_IMAGE: ${{ github.event.inputs.ql_image || 'whyour/qinglong:latest' }}
+          QL_DATA_DIR: tools/qinglong/data
+        run: python tools/qinglong/run_panel.py
+
+      # 脚本被硬杀时兜底清理（容器名与脚本一致）
+      - name: 清理残留容器
+        if: always()
+        run: |
+          docker rm -f ql-toolbox 2>/dev/null || true
+          pkill -f cloudflared 2>/dev/null || true
+
+      - name: 上传面板数据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qinglong-data
+          path: tools/qinglong/data/
+          retention-days: 7
+          if-no-files-found: warn
+          compression-level: 0
+
+      # 可选：把 data/ 提交回仓库（含 sqlite/日志，仓库会持续变大，默认关闭）
+      - name: 回写数据目录（可选）
+        if: ${{ github.event.inputs.persist_data == true || github.event.inputs.persist_data == 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f tools/qinglong/data 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(qinglong): 更新面板数据 [skip ci]"
+            git push
+          fi

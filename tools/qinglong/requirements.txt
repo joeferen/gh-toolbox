@@ -1,0 +1,2 @@
+# 本工具无第三方依赖（仅 Python 标准库）。
+# 保留该文件是为保持各工具 workflow 骨架一致（checkout -> setup-python -> pip install -> 运行脚本）。
