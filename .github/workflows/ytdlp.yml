@@ -74,13 +74,19 @@ jobs:
           aria2c --version | head -n 1
 
       # 可选：在仓库 Secrets 配置 YTDLP_COOKIES（cookies.txt 的 base64）后自动启用
+      # 注意：secrets 上下文不能直接用于 if 条件（GitHub 会报 Unrecognized named-value），
+      # 这里透传进 env，由 shell 判断是否为空
       - name: 写入 cookies（可选）
-        if: ${{ secrets.YTDLP_COOKIES != '' }}
         env:
           YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES }}
         run: |
-          printf '%s' "$YTDLP_COOKIES_B64" | base64 -d > cookies.txt
-          echo "YTDLP_COOKIES=cookies.txt" >> "$GITHUB_ENV"
+          if [ -n "$YTDLP_COOKIES_B64" ]; then
+            printf '%s' "$YTDLP_COOKIES_B64" | base64 -d > cookies.txt
+            echo "YTDLP_COOKIES=cookies.txt" >> "$GITHUB_ENV"
+            echo "已写入 cookies.txt（来源：secret YTDLP_COOKIES）"
+          else
+            echo "未配置 secret YTDLP_COOKIES，跳过（无需登录态的下载不受影响）"
+          fi
 
       # GitHub Action 控制 Python 脚本的入口：inputs -> 环境变量 -> 脚本
       - name: 运行下载脚本
