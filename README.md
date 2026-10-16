@@ -58,7 +58,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 1. 编辑 `tools/ytdlp/urls.txt`，填入视频/播放列表/直链/M3U8 URL（每行一个，`#` 注释）。
 2. 打开仓库 **Actions → yt-dlp 下载器 → Run workflow**，按需填写参数（见下表），点 **Run workflow**。
 3. 运行结束后在 **Artifacts** 区下载 `ytdlp-downloads`。
-4. 勾选 `aria2` 时 workflow 会自动安装 aria2；`transcode` 选 `remux`/`recode` 时用 ffmpeg 转码（runner 自带 ffmpeg）。
+4. 勾选 `aria2` 时 workflow 会自动安装 aria2；`transcode` 选 `remux`/`recode` 时用 ffmpeg 转码（runner 自带 ffmpeg）；勾选 `hf_upload` 时下载完成后上传到 Hugging Face datasets（见下文）。
 
 #### 手动触发参数
 
@@ -69,6 +69,8 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `playlist_end` | string | 每个播放列表下载上限，0 不限 | `0` |
 | `transcode` | choice | 转码为 MP4：`none` 不处理 / `remux` 仅换封装(流拷贝,快) / `recode` 重编码 H.264/AAC(慢,兼容最好) | `none` |
 | `aria2` | boolean | 使用 aria2c 多连接加速（自动安装） | `false` |
+| `hf_upload` | boolean | 下载完成后上传到 Hugging Face datasets（需 Secret `HF_TOKEN`） | `false` |
+| `hf_repo` | string | HF dataset 仓库 ID（如 `smanx/my-videos`）；留空则用 Secret `HF_REPO` | 空 |
 
 常用组合：
 
@@ -78,6 +80,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | 来源是 mkv/webm/ts 等，想无损换成 mp4 封装 | `transcode=remux` |
 | 来源编码古怪（如 mpeg2/wmv），要标准 H.264 MP4 | `transcode=recode` |
 | 大文件多连接加速 | `aria2` 勾选 |
+| 上传到 Hugging Face 数据集 | `hf_upload` 勾选 + `hf_repo` 填写 |
 | 只要 1080p | `format=best[height<=1080]` |
 
 ### 环境变量
@@ -98,6 +101,10 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `YTDLP_TRANSCODE` | 转码为 MP4：`none` 不处理 / `remux` 流拷贝换封装(快) / `recode` 重编码 H.264/AAC(慢) | `none` |
 | `YTDLP_ARIA2` | 启用 aria2c 加速（`1`/`true`/`yes`/`on`） | 关 |
 | `YTDLP_ARIA2_ARGS` | aria2c 附加参数（空格分隔） | `-x 16 -s 16 -k 1M` |
+| `YTDLP_HF_UPLOAD` | 启用上传到 Hugging Face datasets（`1`/`true`/`yes`/`on`） | 关 |
+| `YTDLP_HF_REPO` | HF dataset 仓库 ID（`用户名/数据集名`） | 空 |
+| `YTDLP_HF_PRIVATE` | 创建仓库时是否私有 | `1`（私有） |
+| `HF_TOKEN` | Hugging Face 令牌（也可本地 `hf auth login` 替代） | 空 |
 
 ### 本地运行
 
@@ -118,6 +125,9 @@ YTDLP_TRANSCODE=remux python tools/ytdlp/download.py "https://example.com/video/
 
 # aria2 多连接加速（需本机 PATH 中已有 aria2c）
 YTDLP_ARIA2=1 python tools/ytdlp/download.py "https://example.com/big.mp4"
+
+# 下载并上传到 Hugging Face datasets（需 HF_TOKEN 或本机 hf auth login）
+YTDLP_HF_UPLOAD=1 YTDLP_HF_REPO=smanx/my-videos python tools/ytdlp/download.py
 ```
 
 ### cookies（可选）
@@ -133,6 +143,22 @@ base64 -w0 cookies.txt   # 生成单行 base64
 ### 下载档案
 
 `download.py` 每下载完成一个视频就把 `extractor 视频ID` 写入 `.ytdlp-archive.txt`，**单次运行内**重复的 URL、重叠的播放列表条目不会重复下载。注意 workflow 不把该文件写回仓库（仓库只读），runner 也是临时的——每次手动运行都从空档案开始；想要跨运行防重复，就本地运行并保留该文件，或自行把它提交进仓库（脚本读取到即生效）。删除某行即可强制重新下载。
+
+### 上传到 Hugging Face datasets（可选）
+
+全部下载完成后，可把 `downloads/` 整个上传到 HF dataset 仓库（默认关闭）。
+
+**配置**：
+
+1. 到 [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) 创建 Token（权限选 `write`）。
+2. 存为仓库 Secret：`HF_TOKEN`（必填）；`HF_REPO`（可选，作为默认仓库 ID）。
+3. Run workflow 时勾选 `hf_upload`，并填写 `hf_repo`（留空则用 Secret `HF_REPO`）。
+
+**行为**：
+
+- 上传 `tools/ytdlp/downloads/` 全目录到 dataset 仓库根路径；仓库不存在则自动创建（**默认私有**，`YTDLP_HF_PRIVATE=0` 可改公开；已存在的仓库不会改动其可见性）。
+- 内容未变化的文件不会重复传输（hub 按 hash 去重）。
+- 上传失败会记录错误并以退出码 1 结束（Artifact 仍照常上传）。
 
 ### 注意事项
 

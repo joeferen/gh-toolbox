@@ -30,6 +30,15 @@ on:
         required: false
         default: false
         type: boolean
+      hf_upload:
+        description: "下载完成后上传到 Hugging Face datasets（需配 Secret HF_TOKEN）"
+        required: false
+        default: false
+        type: boolean
+      hf_repo:
+        description: "HF dataset 仓库 ID（用户名/数据集名，如 smanx/my-videos）；留空则用 Secret HF_REPO"
+        required: false
+        default: ""
 
 # 同一分支不并发跑，排队执行
 concurrency:
@@ -96,6 +105,9 @@ jobs:
           YTDLP_PLAYLIST_END: ${{ github.event.inputs.playlist_end }}
           YTDLP_TRANSCODE: ${{ github.event.inputs.transcode }}
           YTDLP_ARIA2: ${{ github.event.inputs.aria2 }}
+          YTDLP_HF_UPLOAD: ${{ github.event.inputs.hf_upload }}
+          YTDLP_HF_REPO: ${{ github.event.inputs.hf_repo || secrets.HF_REPO }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python tools/ytdlp/download.py
 
       - name: 上传下载产物

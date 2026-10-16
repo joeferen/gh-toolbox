@@ -1,2 +1,5 @@
 # yt-dlp 更新非常频繁（各站点改版），不锁版本，由 CI 每次 pip install -U 装最新
 yt-dlp
+
+# Hugging Face datasets 上传（仅启用 YTDLP_HF_UPLOAD 时用到）
+huggingface_hub

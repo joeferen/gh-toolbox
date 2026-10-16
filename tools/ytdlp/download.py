@@ -10,6 +10,7 @@
   2. 调用 yt-dlp Python API 执行下载（格式/封装/并发等通过环境变量控制）
   3. 维护下载档案（默认 .ytdlp-archive.txt），避免重复下载
   4. 每个文件下载完成后输出完整路径、大小与耗时
+  5. 可选：全部下载完成后上传到 Hugging Face datasets（默认关闭）
 
 环境变量：
   YTDLP_URLS             下载目标，换行或逗号分隔（优先于 urls.txt）
@@ -26,6 +27,10 @@
   YTDLP_TRANSCODE        转码为 MP4：none(默认)/remux(仅换封装,流拷贝)/recode(重编码H.264+AAC,慢)
   YTDLP_ARIA2            置 1/true/yes/on 启用 aria2c 多连接加速（未安装则回退内置下载器）
   YTDLP_ARIA2_ARGS       aria2c 附加参数，空格分隔（默认 -x 16 -s 16 -k 1M）
+  YTDLP_HF_UPLOAD        置 1/true/yes/on 启用上传到 Hugging Face datasets（默认关）
+  YTDLP_HF_REPO          HF dataset 仓库 ID（用户名/数据集名，如 smanx/my-videos）
+  YTDLP_HF_PRIVATE       创建仓库时是否私有，1=私有(默认)/0=公开
+  HF_TOKEN               Hugging Face 访问令牌（也可本地 hf auth login 替代）
 
 退出码：0 = 全部成功/无需下载；1 = 存在失败项；2 = 缺少依赖。
 """
@@ -250,6 +255,31 @@ def report_downloads(out_root: Path, archive_path: Path, t0: float,
     return found
 
 
+def upload_to_hf(folder: Path, repo_id: str, private: bool) -> str:
+    """把 folder 上传到 Hugging Face dataset 仓库，返回仓库页面 URL。
+
+    延迟导入 huggingface_hub：纯下载场景不依赖该库。
+    令牌优先取 HF_TOKEN 环境变量，否则用本地 `hf auth login` 缓存。
+    """
+    try:
+        from huggingface_hub import HfApi
+    except ImportError:
+        raise RuntimeError(
+            "缺少依赖 huggingface_hub，请先执行: pip install -r tools/ytdlp/requirements.txt"
+        )
+
+    api = HfApi()
+    # 仓库已存在时 exist_ok 不报错，也不会改动已有仓库的可见性
+    api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
+    api.upload_folder(
+        repo_id=repo_id,
+        repo_type="dataset",
+        folder_path=str(folder),
+        commit_message="Upload from gh-toolbox ytdlp",
+    )
+    return f"https://huggingface.co/datasets/{repo_id}"
+
+
 def main() -> int:
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
         print(__doc__)
@@ -357,13 +387,33 @@ def main() -> int:
             total_files += len(report_downloads(out_root, archive_path, t0, elapsed, reported))
             ok.append(url)
 
+    # ---- 全部下载完毕：可选上传到 Hugging Face datasets（默认关闭） ----
+    upload_failed = False
+    if env("YTDLP_HF_UPLOAD").lower() in ("1", "true", "yes", "on"):
+        repo_id = env("YTDLP_HF_REPO")
+        has_files = out_root.is_dir() and any(p.is_file() for p in out_root.rglob("*"))
+        if not repo_id:
+            log("启用了 HF 上传但未设置 YTDLP_HF_REPO（格式：用户名/数据集名），跳过上传")
+            upload_failed = True
+        elif not has_files:
+            log(f"输出目录 {out_root} 没有文件，跳过 HF 上传")
+        else:
+            private = env("YTDLP_HF_PRIVATE", "1").lower() in ("1", "true", "yes", "on")
+            log(f"上传到 Hugging Face datasets: {repo_id}（{'私有' if private else '公开'}仓库）")
+            try:
+                repo_url = upload_to_hf(out_root, repo_id, private)
+                log(f"上传完成: {repo_url}")
+            except Exception as exc:
+                log(f"上传到 Hugging Face 失败: {exc}")
+                upload_failed = True
+
     log("=" * 48)
     log(f"任务结束: 成功 {len(ok)}，跳过 {len(skipped)}，失败 {len(failed)}")
     if total_files:
         log(f"共下载 {total_files} 个文件，下载总耗时 {fmt_duration(total_time)}")
     for url in failed:
         log(f"  失败: {url}")
-    return 1 if failed else 0
+    return 1 if (failed or upload_failed) else 0
 
 
 if __name__ == "__main__":
