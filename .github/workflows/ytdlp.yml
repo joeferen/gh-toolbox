@@ -63,10 +63,8 @@ on:
         default: ""
         type: string
 
-# 同一分支不并发跑，排队执行
-concurrency:
-  group: ytdlp-${{ github.ref }}
-  cancel-in-progress: false
+# 允许并发：不设 concurrency，多次手动触发各自立即起 runner 排队跑，互不等待。
+# runner 之间相互隔离（产物/档案各自本地），互不影响。
 
 permissions:
   contents: read # 只读检出，不向仓库写任何文件
