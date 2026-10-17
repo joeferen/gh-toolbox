@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         gh-toolbox ytdlp 一键触发器
 // @namespace    https://github.com/smanx/gh-toolbox/tree/main/tools/ytdlp
-// @version      1.5.0
+// @version      1.6.0
 // @description  在 smanx/gh-toolbox 仓库页面或 jable.tv / pornhub 视频页显示悬浮按钮，点击弹框填写参数，一键手动触发「yt-dlp 下载器」GitHub Action（workflow_dispatch）；自动从仓库页面快照或当前视频页提取视频直链与标题填入 urls/rename 参数，并轮询展示运行状态与最近运行记录。
 // @author       smanx
 // @match        https://github.com/smanx/gh-toolbox*
@@ -37,7 +37,8 @@
  *          parse_urls 会忽略 # 行）；
  *        - rename ← 视频标题（文件名安全化）。
  *      urls / rename 不保存，每次打开弹框都会重新提取（避免把上一个视频的链接
- *      带进下一次）；其余表单项全部按 host 持久化；
+ *      带进下一次）；headers 栏为空时默认带上 UA + Referer（站点 origin）；
+ *      其余表单项全部按 host 持久化；
  *   4. 触发目标**三者全部用户手填、不写死**：弹框内「owner · 用户名」「repo · 仓库名」
  *      「workflow · 触发哪个 Action」（均可粘贴完整 URL/路径自动拆解；留空才兜底
  *      CONFIG 默认值），配置 GitHub Token（PAT）后点击「触发 Action」调用
@@ -152,8 +153,8 @@
     },
     {
       key: 'headers', label: 'headers · 自定义请求头', type: 'textarea', default: '',
-      hint: '单行 JSON，如 {"Referer":"https://example.com/"}；带 Cookie 会自动加载为 cookies',
-      placeholder: '{"Referer":"https://example.com/"}',
+      hint: '默认已带 UA + Referer（按站点自动生成，可自行修改）；单行 JSON；带 Cookie 会自动加载为 cookies',
+      placeholder: '{"User-Agent":"Mozilla/5.0 ...","Referer":"https://example.com/"}',
     },
     {
       key: 'impersonate', label: 'impersonate · TLS 指纹伪装', type: 'text', default: '',
@@ -496,6 +497,33 @@
       .slice(0, 120);
   }
 
+  // 默认请求头：UA + Referer（headers 栏为空时的默认值）。
+  // Referer 取站点 origin（如 https://jable.tv/）——CDN 防盗链一般只校验站点，
+  // origin 级 Referer 对同站所有视频都有效，也避免按页缓存的 Referer 过期问题。
+  function defaultHeaders(pageUrl) {
+    const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+    const h = { 'User-Agent': ua };
+    let referer = '';
+    try {
+      if (pageUrl) referer = new URL(pageUrl).origin + '/';
+      else if (onVideoPage()) referer = location.origin + '/';
+    } catch (e) { referer = ''; }
+    if (referer) h['Referer'] = referer;
+    return JSON.stringify(h);
+  }
+
+  // 判断 headers 当前值是否为脚本自动生成的默认头（键 ⊆ {User-Agent, Referer}）
+  // ——是则允许在提取后按新站点覆盖刷新；用户自定义值（Cookie / 自定义键）不动
+  function isGeneratedHeaders(v) {
+    try {
+      const o = JSON.parse(v);
+      if (!o || typeof o !== 'object' || Array.isArray(o)) return false;
+      const keys = Object.keys(o);
+      if (!keys.length || keys.length > 2) return false;
+      return keys.every((k) => k === 'User-Agent' || k === 'Referer');
+    } catch (e) { return false; }
+  }
+
   // 自动提取并写入视频链接与标题（urls / rename 两项不持久化）：
   //   - 打开弹框时总是重新提取（每个视频提取最新一次，不把上一个的链接带进下一次）；
   //   - 点「载入页面视频」或切换快照下拉时同样立即重新提取；
@@ -555,6 +583,14 @@
       urlsNode.value = lines.join('\n'); // urls / rename 不持久化，仅写入弹框
       if (CONFIG.autoFillRename && renameNode && parsed.title) {
         renameNode.value = sanitizeFileName(parsed.title);
+      }
+      // headers 栏为空、或仍是脚本生成的默认头时，按提取到的站点补/换 UA + Referer；
+      // 用户自定义值（带 Cookie / 自定义键）不动
+      const headersNode = formEl.querySelector('[data-key="headers"]');
+      if (headersNode && (!headersNode.value.trim() || isGeneratedHeaders(headersNode.value))) {
+        const dh = defaultHeaders(parsed.pageUrl);
+        headersNode.value = dh;
+        store.set(KEY.form('headers'), dh);
       }
       setStatus('已载入 ' + parsed.videos.length + ' 个视频' + (parsed.title ? '：' + parsed.title : '') +
         '（来源：' + srcLabel + '）', 'ok');
@@ -1087,6 +1123,10 @@
       if (saved !== undefined && saved !== null) {
         if (spec.type === 'checkbox') input.checked = !!saved;
         else input.value = saved;
+      } else if (spec.key === 'headers') {
+        // 视频站页面：构建时即默认带上 UA + Referer（当前站点 origin）；
+        // 仓库页站点未知先留空，快照提取成功后由 autoFillFromPage 补
+        input.value = onVideoPage() ? defaultHeaders(location.origin + '/') : '';
       } else if (spec.default !== undefined) {
         if (spec.type === 'checkbox') input.checked = !!spec.default;
         else input.value = String(spec.default);

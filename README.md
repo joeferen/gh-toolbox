@@ -232,6 +232,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 
 - 悬浮按钮可拖动、位置记忆；仅在 `smanx/gh-toolbox` 仓库页面与 jable.tv / pornhub 视频页显示（GitHub Turbo 导航自动感知，离开这几类页面自动隐藏）——按钮出现位置由 `@match` 决定，触发目标则由手填的三栏决定，两者独立。
 - 弹框表单与 workflow 的 12 个 inputs 一一对应（每项带中文说明），填写值**按当前 host 隔离保存**（github.com / jable.tv / cn.pornhub.com 各记各的），下次自动带出；「重置参数」一键还原默认值（同时清除自动带入的视频信息）。**例外：urls（下载链接）与 rename（标题）不保存**——每次打开弹框都会重新提取，不会把上一个视频的链接带进下一次；其余（format/overwrite/transcode/hf_repo/headers/Token/owner/repo/workflow/ref 等）全部保存。
+- **headers 默认带上 UA + Referer**：headers 栏为空时自动填入 `{"User-Agent":"<Chrome UA>","Referer":"<站点 origin>"}`（视频站打开时用当前站点，仓库页在快照提取成功后补目标站点）；仅当栏为空或仍是自动生成的默认头时才刷新，手填的自定义请求头（如带 Cookie）不会被覆盖。
 - 触发分支 `ref` 可改（默认 `main`；在 `/tree/<分支>` 或 `/blob/<分支>` 页面打开会自动带出该分支）；触发目标 workflow 手填（见上）。
 - 本地即时校验：`headers` 非法 JSON、`playlist_end` 非整数直接拦在弹框里，不会带到服务端才失败。
 - 触发后自动轮询新运行：排队中 → 进行中 → 成功/失败，附链接直跳 Actions 日志；弹框内还可查看 / 刷新最近 5 次运行。
