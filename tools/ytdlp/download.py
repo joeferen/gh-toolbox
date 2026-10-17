@@ -145,12 +145,20 @@ def env_int(name: str, default: int) -> int:
 
 
 def parse_urls(raw: str) -> list:
-    """解析 URL 清单：支持换行/逗号分隔，'#' 为注释。"""
+    """解析 URL 清单：每行一个，非注释行支持逗号分隔；'#' 开头为注释行。
+
+    注意：'#' 行整行跳过、不做逗号切分——注释里可能带逗号（如油猴脚本写入的
+    视频标题），先按逗号切分会把注释切碎成假 URL。
+    """
     urls = []
-    for line in raw.replace(",", "\n").splitlines():
+    for line in raw.splitlines():
         line = line.strip()
-        if line and not line.startswith("#"):
-            urls.append(line)
+        if not line or line.startswith("#"):
+            continue
+        for part in line.split(","):
+            part = part.strip()
+            if part:
+                urls.append(part)
     return urls
 
 

@@ -576,7 +576,7 @@
         return;
       }
       const lines = [];
-      if (parsed.title) lines.push('# ' + parsed.title);
+      if (parsed.title) lines.push('# ' + parsed.title.replace(/,/g, '，')); // 标题里的 ASCII 逗号换全角，防旧版 parse_urls 逗号切分把注释切碎
       if (parsed.pageUrl) lines.push('# 页面: ' + parsed.pageUrl);
       if (parsed.alt) lines.push('# 下载端点: ' + parsed.alt);
       parsed.videos.forEach((v) => lines.push(v.url));
