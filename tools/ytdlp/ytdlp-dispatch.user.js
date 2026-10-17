@@ -1,10 +1,9 @@
 // ==UserScript==
 // @name         gh-toolbox ytdlp 一键触发器
-// @namespace    https://github.com/smanx/gh-toolbox/tree/main/tools/ytdlp
+// @namespace    https://gh-toolbox/ytdlp
 // @version      1.6.1
-// @description  在 smanx/gh-toolbox 仓库页面或 jable.tv / pornhub 视频页显示悬浮按钮，点击弹框填写参数，一键手动触发「yt-dlp 下载器」GitHub Action（workflow_dispatch）；自动从仓库页面快照或当前视频页提取视频直链与标题填入 urls/rename 参数，并轮询展示运行状态与最近运行记录。
-// @author       smanx
-// @match        https://github.com/smanx/gh-toolbox*
+// @description  在 gh-toolbox 仓库页面或 jable.tv / pornhub 视频页显示悬浮按钮，点击弹框填写参数，一键手动触发「yt-dlp 下载器」GitHub Action（workflow_dispatch）；自动从仓库页面快照或当前视频页提取视频直链与标题填入 urls/rename 参数，并轮询展示运行状态与最近运行记录。
+// @match        https://github.com/*/gh-toolbox*
 // @match        https://jable.tv/videos/*
 // @match        https://*.pornhub.com/view_video.php*
 // @grant        GM_setValue
@@ -21,7 +20,7 @@
  * gh-toolbox / ytdlp 油猴触发器
  * --------------------------------
  * 功能：
- *   1. 在 https://github.com/smanx/gh-toolbox* 仓库页面、jable.tv 视频页
+ *   1. 在 gh-toolbox 仓库页面（github.com/<owner>/gh-toolbox）、jable.tv 视频页
  *      （https://jable.tv/videos/*）、pornhub 视频页
  *      （https://*.pornhub.com/view_video.php*）右下角显示悬浮按钮（可拖动）；
  *   2. 点击按钮打开弹框，填写 workflow_dispatch 参数（与 .github/workflows/ytdlp.yml
@@ -77,7 +76,7 @@
   // CONFIG.workflowFile 仅作留空时的兜底默认值。
   // ---------------------------------------------------------------------------
   const CONFIG = {
-    owner: 'smanx',
+    owner: '',                        // 留空 = 仓库页对任意属主的 <repo> 生效；也可填用户名限定
     repo: 'gh-toolbox',
     workflowFile: 'ytdlp.yml',        // 默认 workflow 文件名（.github/workflows/ 下）
     workflowName: 'yt-dlp 下载器',
@@ -138,7 +137,7 @@
     {
       key: 'hf_repo', label: 'hf_repo · HF 仓库 ID', type: 'text', default: '',
       hint: '格式 用户名/数据集名；留空则用 Secret YTDLP_HF_REPO',
-      placeholder: 'smanx/my-videos',
+      placeholder: 'myuser/my-videos',
     },
     {
       key: 'hf_path', label: 'hf_path · 上传子目录', type: 'text', default: '',
@@ -162,7 +161,7 @@
     },
   ];
 
-  const REPO_PREFIX = `https://github.com/${CONFIG.owner}/${CONFIG.repo}`;
+  const REPO_PREFIX = CONFIG.owner ? `https://github.com/${CONFIG.owner}/${CONFIG.repo}` : '';
   const API_BASE = 'https://api.github.com';
   const POLL_FIND_RUN_MS = 60000;   // 触发后寻找新运行的最长等待
   const POLL_RUN_MS = 600000;       // 运行状态轮询的最长总时长（10 分钟）
@@ -697,9 +696,12 @@
   // ---------------------------------------------------------------------------
   function inRepoPage() {
     const path = location.origin + location.pathname;
-    if (path !== REPO_PREFIX && !path.startsWith(REPO_PREFIX + '/')) return false;
-    // 排除同前缀的其他仓库（如 smanx/gh-toolbox-old）
-    return true;
+    if (CONFIG.owner) {
+      // 限定属主：排除同前缀的其他仓库（如 myuser/gh-toolbox-old）
+      return path === REPO_PREFIX || path.startsWith(REPO_PREFIX + '/');
+    }
+    // owner 未配置：任意属主的 <repo> 仓库页均生效（/gh-toolbox-old 等同前缀仓库不算）
+    return new RegExp('^https://github\\.com/[^/]+/' + CONFIG.repo + '(/|$)').test(path);
   }
 
   // 视频站详情页（@match 已限定路径，这里按 CONFIG.videoSites 兜底再判一次）
@@ -960,7 +962,7 @@
     });
     ownerRow.append(ownerLabel, ownerInput);
     ownerRow.appendChild(el('div', 'ytdlp-t-hint',
-      '仓库属主（用户 / 组织名，如 smanx）；直接粘贴 https://github.com/<用户名>/<仓库名> 也会自动拆解'));
+      '仓库属主（用户 / 组织名，如 octocat）；直接粘贴 https://github.com/<用户名>/<仓库名> 也会自动拆解'));
     formSec.appendChild(ownerRow);
 
     const repoRow = el('div', 'ytdlp-t-row');

@@ -41,7 +41,7 @@ on:
         default: false
         type: boolean
       hf_repo:
-        description: "HF dataset 仓库 ID（用户名/数据集名，如 smanx/my-videos）；留空则用 Secret YTDLP_HF_REPO"
+        description: "HF dataset 仓库 ID（用户名/数据集名，如 myuser/my-videos）；留空则用 Secret YTDLP_HF_REPO"
         required: false
         default: ""
       hf_path:

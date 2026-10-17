@@ -51,7 +51,7 @@
                           文件是否已存在，已存在则跳过、不下载（HLS 场景 .ts/.mp4
                           后缀偏差也能识别）
   YTDLP_HF_UPLOAD        置 1/true/yes/on 启用上传到 Hugging Face datasets（默认关）
-  YTDLP_HF_REPO          HF dataset 仓库 ID（用户名/数据集名，如 smanx/my-videos）
+  YTDLP_HF_REPO          HF dataset 仓库 ID（用户名/数据集名，如 myuser/my-videos）
   YTDLP_HF_PRIVATE       创建仓库时是否私有，1=私有(默认)/0=公开
   YTDLP_HF_PATH          上传到数据集仓库内的子目录（如 videos/2024），留空=根路径
   YTDLP_HF_TOKEN         Hugging Face 访问令牌（带工具前缀，避免多工具 token 混用）

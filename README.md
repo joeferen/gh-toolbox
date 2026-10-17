@@ -73,7 +73,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `transcode` | choice | 转码为 MP4（**依赖 ffmpeg**，workflow 自动保证；本地需自备）：`none` 不转(探测到 TS 流则如实命名 .ts) / `remux` 仅换封装、流拷贝(快/无损/体积不变) / `recode` 重编码 H.264+AAC(慢/有损/体积会变，救不兼容编码的源)。都会按真实封装修正后缀 | `none` |
 | `aria2` | boolean | 使用 aria2c 多连接加速（自动安装） | `false` |
 | `hf_upload` | boolean | 下载完成后上传到 Hugging Face datasets（需 Secret `YTDLP_HF_TOKEN`） | `false` |
-| `hf_repo` | string | HF dataset 仓库 ID（如 `smanx/my-videos`）；留空则用 Secret `YTDLP_HF_REPO` | 空 |
+| `hf_repo` | string | HF dataset 仓库 ID（如 `myuser/my-videos`）；留空则用 Secret `YTDLP_HF_REPO` | 空 |
 | `hf_path` | string | 上传到数据集仓库内的子目录（如 `videos/2024`），留空 = 根路径 | 空 |
 | `rename` | string | 输出文件名（不含扩展名，如 `myvideo`；也可传含 `%` 的模板）；留空用默认命名 | 空 |
 | `headers` | string | 自定义请求头，单行 JSON（如 `{"Referer":"https://example.com/"}`）；本地运行也支持每行 `Name: Value`。带 `Cookie` 会自动加载为 cookies；值不会打进日志 | 空 |
@@ -161,7 +161,7 @@ YTDLP_HEADERS='{"Referer":"https://example.com/","User-Agent":"Mozilla/5.0"}' \
 YTDLP_IMPERSONATE=1 python tools/ytdlp/download.py "https://surrit.com/xxx/playlist.m3u8"
 
 # 下载并上传到 Hugging Face datasets 的指定子目录（需 YTDLP_HF_TOKEN 或本机 hf auth login）
-YTDLP_HF_UPLOAD=1 YTDLP_HF_REPO=smanx/my-videos YTDLP_HF_PATH=videos/2024 python tools/ytdlp/download.py
+YTDLP_HF_UPLOAD=1 YTDLP_HF_REPO=myuser/my-videos YTDLP_HF_PATH=videos/2024 python tools/ytdlp/download.py
 ```
 
 ### cookies（可选）
@@ -230,7 +230,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 
 **功能**：
 
-- 悬浮按钮可拖动、位置记忆；仅在 `smanx/gh-toolbox` 仓库页面与 jable.tv / pornhub 视频页显示（GitHub Turbo 导航自动感知，离开这几类页面自动隐藏）——按钮出现位置由 `@match` 决定，触发目标则由手填的三栏决定，两者独立。
+- 悬浮按钮可拖动、位置记忆；仅在 `gh-toolbox` 仓库页面与 jable.tv / pornhub 视频页显示（GitHub Turbo 导航自动感知，离开这几类页面自动隐藏）——按钮出现位置由 `@match` 决定，触发目标则由手填的三栏决定，两者独立。
 - 弹框表单与 workflow 的 12 个 inputs 一一对应（每项带中文说明），填写值**按当前 host 隔离保存**（github.com / jable.tv / cn.pornhub.com 各记各的），下次自动带出；「重置参数」一键还原默认值（同时清除自动带入的视频信息）。**例外：urls（下载链接）与 rename（标题）不保存**——每次打开弹框都会重新提取，不会把上一个视频的链接带进下一次；其余（format/overwrite/transcode/hf_repo/headers/Token/owner/repo/workflow/ref 等）全部保存。
 - **headers 默认带上 UA + Referer**：headers 栏为空时自动填入 `{"User-Agent":"<Chrome UA>","Referer":"<站点 origin>"}`（视频站打开时用当前站点，仓库页在快照提取成功后补目标站点）；仅当栏为空或仍是自动生成的默认头时才刷新，手填的自定义请求头（如带 Cookie）不会被覆盖。
 - 触发分支 `ref` 可改（默认 `main`；在 `/tree/<分支>` 或 `/blob/<分支>` 页面打开会自动带出该分支）；触发目标 workflow 手填（见上）。
@@ -244,7 +244,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 2. 准备 GitHub Token：
    - 经典 PAT：勾选 `repo` scope；
    - 细粒度 PAT：`Actions: read+write` + `Contents: read` + `Metadata: read`。
-3. 打开 <https://github.com/smanx/gh-toolbox> 任意页面或任意 jable.tv / pornhub 视频页，点右下角 **▶ yt-dlp** 悬浮按钮，弹框内粘贴 Token →「保存并验证」→（视频信息已自动带好）按需改参数 →「触发 Action」。
+3. 打开 gh-toolbox 仓库任意页面（`https://github.com/<owner>/gh-toolbox`）或任意 jable.tv / pornhub 视频页，点右下角 **▶ yt-dlp** 悬浮按钮，弹框内粘贴 Token →「保存并验证」→（视频信息已自动带好）按需改参数 →「触发 Action」。
 
 **注意**：
 
