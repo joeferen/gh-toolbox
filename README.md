@@ -218,7 +218,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 
 嫌每次去 Actions 页面点 Run workflow 麻烦，可安装油猴脚本 `tools/ytdlp/ytdlp-dispatch.user.js`：在仓库页面或 jable.tv / pornhub 视频页右下角显示悬浮按钮，点击弹框填参数，一键触发本 workflow，并轮询展示运行状态。
 
-**触发目标不写死**：弹框内「**workflow · 触发哪个 Action**」由用户手填 `.github/workflows/` 下的文件名（如 `ytdlp.yml` / `qinglong.yml`，粘贴完整路径 `.github/workflows/xxx.yml` 也可，会自动归一化），留空才兜底用脚本里的默认值。dispatch 调用、运行状态轮询、最近运行列表、弹框标题和「Actions 页面」链接全部跟随该填写值；手填值本地记忆，下次自动带出。
+**触发目标三者全部手填、不写死**：弹框内「**owner · 用户名」「repo · 仓库名」「workflow · 触发哪个 Action**」都由用户手动输入（均可直接粘贴 `https://github.com/<用户名>/<仓库名>` 或 `.github/workflows/xxx.yml` 完整路径，会自动拆解归一化；留空才兜底用脚本里的 CONFIG 默认值）。dispatch 触发、Token 验证、页面快照拉取、运行状态轮询、最近运行列表、弹框标题和「Actions 页面」链接全部跟随这三个填写值；手填值本地记忆，下次自动带出。也就是说这个脚本可以触发**任意仓库**的 workflow，不只是本仓库。
 
 **自动带上视频链接与标题**（打开弹框即自动填入，无需手动复制粘贴）：
 
@@ -226,13 +226,12 @@ base64 -w0 cookies.txt   # 生成单行 base64
 - **pornhub 视频页**（`@match https://*.pornhub.com/view_video.php*`）：从当前实时页面提取 flashvars `mediaDefinitions` 里的 `"videoUrl"`（JSON 转义会自动反转义、HTML 实体自动解码）——**多清晰度取最高**（如 `720P_4000K_xxx.mp4/master.m3u8`）；`/video/get_media?s=...` 下载端点以 `# 下载端点:` 注释行带回（参考用，不进下载列表）。
 - **GitHub 仓库页**：从仓库快照目录 `tools/ytdlp/html/`（兼容旧路径 `tools/ytdlp/http/`）下的 `*.html` 快照提取——把视频页「另存为」HTML 放进该目录并提交推送，之后在仓库页面打开弹框即可一键触发。目录列举 + 每个文件的最近提交时间走 `api.github.com`（公开仓库无 Token 也可用，限流 60/h），拉取文件走 raw.githubusercontent.com（公开免鉴权），失败回退 contents API；刚推送的文件 raw CDN 约 5 分钟生效。
 - **多个快照时默认自动选中最近提交的那个**（= 最新保存的页面），弹框内的「页面快照」下拉可手动切换，切换后立即重新提取。
-- 提取结果写入两个参数：`urls` ← 视频直链（**标题、页面地址、下载端点均以 `#` 注释行带上**，`download.py` 的 `parse_urls` 会忽略 `#` 行，不影响下载）；`rename` ← 视频标题（做了文件名安全化；仅当 `rename` 为空或仍是上次自动填入值时才写，**不覆盖手填值**）。
-- 手填过 `urls` 后重新打开弹框不会覆盖；点「**载入页面视频**」可强制重新提取。
+- 提取结果写入两个参数：`urls` ← 视频直链（**标题、页面地址、下载端点均以 `#` 注释行带上**，`download.py` 的 `parse_urls` 会忽略 `#` 行，不影响下载）；`rename` ← 视频标题（做了文件名安全化）。两者**不持久化**，每次打开弹框都会重新提取，可点「**载入页面视频**」手动刷新。
 
 **功能**：
 
-- 悬浮按钮可拖动、位置记忆；仅在 `smanx/gh-toolbox` 仓库页面与 jable.tv / pornhub 视频页显示（GitHub Turbo 导航自动感知，离开这几类页面自动隐藏）。
-- 弹框表单与 workflow 的 12 个 inputs 一一对应（每项带中文说明），填写值本地记忆，下次自动带出；「重置参数」一键还原默认值（同时清除自动带入的视频信息）。
+- 悬浮按钮可拖动、位置记忆；仅在 `smanx/gh-toolbox` 仓库页面与 jable.tv / pornhub 视频页显示（GitHub Turbo 导航自动感知，离开这几类页面自动隐藏）——按钮出现位置由 `@match` 决定，触发目标则由手填的三栏决定，两者独立。
+- 弹框表单与 workflow 的 12 个 inputs 一一对应（每项带中文说明），填写值**按当前 host 隔离保存**（github.com / jable.tv / cn.pornhub.com 各记各的），下次自动带出；「重置参数」一键还原默认值（同时清除自动带入的视频信息）。**例外：urls（下载链接）与 rename（标题）不保存**——每次打开弹框都会重新提取，不会把上一个视频的链接带进下一次；其余（format/overwrite/transcode/hf_repo/headers/Token/owner/repo/workflow/ref 等）全部保存。
 - 触发分支 `ref` 可改（默认 `main`；在 `/tree/<分支>` 或 `/blob/<分支>` 页面打开会自动带出该分支）；触发目标 workflow 手填（见上）。
 - 本地即时校验：`headers` 非法 JSON、`playlist_end` 非整数直接拦在弹框里，不会带到服务端才失败。
 - 触发后自动轮询新运行：排队中 → 进行中 → 成功/失败，附链接直跳 Actions 日志；弹框内还可查看 / 刷新最近 5 次运行。
@@ -251,7 +250,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 - 脚本走 `api.github.com` 的 `workflow_dispatch` 接口，Token 需对该仓库有写权限；Token 只保存在本地浏览器，**不要**写进仓库或分享截图。
 - 运行状态轮询最长 10 分钟，超时会给出 Actions 页面链接；超大任务建议直接去 Actions 页面查看。
 - m3u8 直链有时效性，过期后重新保存一次视频页 HTML（推送更新 `html/` 下的快照）即可。
-- 复用到其他工具（如 qinglong）：脚本默认触发目标已改为手填，一般无需改代码；只有要改**留空时的兜底默认值**才动 `CONFIG.workflowFile`，其余改 `CONFIG`（owner / repo / pageDirs / pageFiles / videoSites）与 `INPUTS`（inputs 定义），`@match` 同步调整即可。
+- 复用到其他工具（如 qinglong）：触发目标已全手填，一般无需改代码；只有要改**留空时的兜底默认值**才动 `CONFIG`（owner / repo / workflowFile / pageDirs / pageFiles / videoSites）与 `INPUTS`（inputs 定义），`@match` 同步调整即可。
 
 ### 注意事项
 
