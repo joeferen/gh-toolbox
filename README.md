@@ -21,7 +21,9 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 │   │   ├── download.py            # 主脚本（入口）
 │   │   ├── requirements.txt       # 该工具专属依赖
 │   │   ├── urls.txt               # 输入清单
-│   │   ├── .ytdlp-archive.txt     # 下载档案（仅单次运行内有效，不写回仓库）
+│   │   ├── html/                  # 页面快照（另存的网页 HTML，油猴脚本打开弹框时自动解析提取视频直链+标题）
+│   │   ├── ytdlp-dispatch.user.js # 油猴脚本（可选）：仓库/jable.tv/pornhub 页面悬浮按钮一键触发 workflow
+│   │   ├── .ytdlp-archive.txt     # 下载档案（仅记录存档，不作跳过判据，不写回仓库）
 │   │   └── downloads/             # 输出目录（gitignore；留存靠 HF 上传或本地运行）
 │   └── qinglong/
 │       ├── run_panel.py           # 主脚本（入口）：起面板 + CF Tunnel + 保活
@@ -57,7 +59,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 
 1. 编辑 `tools/ytdlp/urls.txt`，填入视频/播放列表/直链/M3U8 URL（每行一个，`#` 注释）。
 2. 打开仓库 **Actions → yt-dlp 下载器 → Run workflow**，按需填写参数（见下表），点 **Run workflow**。
-3. 运行结束后：runner 是临时的，下载的文件**默认不保留**——需要文件就勾选 `hf_upload` 上传到 HF datasets（见下文「上传到 Hugging Face datasets」），或本地运行。日志会打印每个文件的完整路径、大小与耗时。
+3. 运行结束后：runner 是临时的，下载的文件**默认不保留**——需要文件就勾选 `hf_upload` 上传到 HF datasets（见下文「上传到 Hugging Face datasets」），或本地运行。日志里能看到完整下载过程（解析/目标文件/实时进度/合并/跳过），每个文件完成后输出完整路径、大小与耗时。
 4. 勾选 `aria2` 时 workflow 会自动安装 aria2；`transcode` 选 `remux`/`recode` 时依赖 ffmpeg（workflow 会确保可用，缺失自动安装）；勾选 `hf_upload` 时下载完成后上传到 Hugging Face datasets（见下文）。
 
 #### 手动触发参数
@@ -67,6 +69,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `urls` | string | 下载目标，每行一个（视频/播放列表/直链/M3U8）；留空用 `urls.txt` | 空 |
 | `format` | string | 格式表达式 | 空（脚本默认 `bv*+ba/b`） |
 | `playlist_end` | string | 每个播放列表下载上限，0 不限 | `0` |
+| `overwrite` | boolean | 是否覆盖目标文件：勾选=**强制重新下载**并覆盖已存在的文件；不勾选=先检查目标文件，**已存在则跳过、不下载** | `false` |
 | `transcode` | choice | 转码为 MP4（**依赖 ffmpeg**，workflow 自动保证；本地需自备）：`none` 不转(探测到 TS 流则如实命名 .ts) / `remux` 仅换封装、流拷贝(快/无损/体积不变) / `recode` 重编码 H.264+AAC(慢/有损/体积会变，救不兼容编码的源)。都会按真实封装修正后缀 | `none` |
 | `aria2` | boolean | 使用 aria2c 多连接加速（自动安装） | `false` |
 | `hf_upload` | boolean | 下载完成后上传到 Hugging Face datasets（需 Secret `YTDLP_HF_TOKEN`） | `false` |
@@ -88,6 +91,9 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | 只要 1080p | `format=best[height<=1080]` |
 | 站点要 Referer/UA 才放行 | `headers={"Referer":"https://example.com/"}` |
 | 被 Cloudflare 拦（403 anti-bot challenge） | `impersonate=1`（TLS 指纹伪装 Chrome） |
+| 文件已在目标处，不想重下 | 不勾选 `overwrite`（默认，自动跳过） |
+| 强制重新下载、覆盖旧文件 | `overwrite` 勾选 |
+| 补下播放列表里缺的几集 | 不勾选 `overwrite`，已存在的条目自动跳过，只下缺失的 |
 
 ### 环境变量
 
@@ -101,6 +107,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `YTDLP_MERGE_FORMAT` | 合并封装格式 | `mp4` |
 | `YTDLP_ARCHIVE` | 下载档案路径 | `tools/ytdlp/.ytdlp-archive.txt` |
 | `YTDLP_PLAYLIST_END` | 播放列表下载上限 | `0` |
+| `YTDLP_OVERWRITE` | 覆盖目标文件（`1`/`true`/`yes`/`on`）：强制重新下载并覆盖已存在文件；不置=目标文件已存在则跳过 | 关 |
 | `YTDLP_CONCURRENT_FRAG` | 分片并发数 | `4` |
 | `YTDLP_RETRIES` | 网络重试次数 | `10` |
 | `YTDLP_COOKIES` | Netscape cookies 文件路径 | 空 |
@@ -129,6 +136,12 @@ python tools/ytdlp/download.py "https://www.youtube.com/watch?v=BaW_jenozKc"
 
 # 覆盖参数
 YTDLP_FORMAT="best[height<=1080]" python tools/ytdlp/download.py
+
+# 强制重新下载并覆盖已存在的目标文件（等价 Actions 勾选 overwrite）
+YTDLP_OVERWRITE=1 python tools/ytdlp/download.py "https://example.com/video"
+
+# 只补下缺失的文件：目标文件已存在则跳过（默认行为）
+YTDLP_OVERWRITE=0 python tools/ytdlp/download.py "https://example.com/playlist"
 
 # HLS(m3u8) 转成 MP4（需 PATH 中有 ffmpeg）
 # remux=流拷贝换封装（快、无损）；recode=重编码 H.264/AAC（慢、有损，救不兼容的源）
@@ -163,7 +176,16 @@ base64 -w0 cookies.txt   # 生成单行 base64
 
 ### 下载档案
 
-`download.py` 每下载完成一个视频就把 `extractor 视频ID` 写入 `.ytdlp-archive.txt`，**单次运行内**重复的 URL、重叠的播放列表条目不会重复下载。注意 workflow 不把该文件写回仓库（仓库只读），runner 也是临时的——每次手动运行都从空档案开始；想要跨运行防重复，就本地运行并保留该文件，或自行把它提交进仓库（脚本读取到即生效）。删除某行即可强制重新下载。
+`download.py` 每下载完成一个视频就把 `extractor 视频ID` 写入 `.ytdlp-archive.txt`，**仅作记录存档，不再作为跳过判据**——是否跳过只看目标文件是否存在（见下方「覆盖与跳过」）。workflow 不把该文件写回仓库（仓库只读），runner 也是临时的——每次手动运行都从空档案开始。删除已下载的文件，下次不勾选 `overwrite` 运行就会重新下载它。
+
+### 覆盖与跳过（overwrite）
+
+| 勾选状态 | 行为 |
+|---|---|
+| 不勾选（默认） | 下载前逐个检查目标文件：已存在 → 跳过不下载（HLS 的 `.ts`/`.mp4` 后缀偏差也能识别）；不存在 → 下载 |
+| 勾选 | 百分百触发下载：绕过一切检查，yt-dlp 先删除已存在的目标文件再重新下载，**直接覆盖** |
+
+播放列表按条目粒度判断：全部条目的目标文件都已存在 → 整个跳过；部分缺失 → 只下载缺失条目（已存在的条目由 yt-dlp 自动跳过，不会重复下载）。
 
 ### 重命名输出文件（可选）
 
@@ -192,11 +214,52 @@ base64 -w0 cookies.txt   # 生成单行 base64
 - 内容未变化的文件不会重复传输（hub 按 hash 去重）。
 - 上传失败会记录错误并以退出码 1 结束（runner 上的文件不受影响）。
 
+### 油猴脚本一键触发（可选）
+
+嫌每次去 Actions 页面点 Run workflow 麻烦，可安装油猴脚本 `tools/ytdlp/ytdlp-dispatch.user.js`：在仓库页面或 jable.tv / pornhub 视频页右下角显示悬浮按钮，点击弹框填参数，一键触发本 workflow，并轮询展示运行状态。
+
+**触发目标不写死**：弹框内「**workflow · 触发哪个 Action**」由用户手填 `.github/workflows/` 下的文件名（如 `ytdlp.yml` / `qinglong.yml`，粘贴完整路径 `.github/workflows/xxx.yml` 也可，会自动归一化），留空才兜底用脚本里的默认值。dispatch 调用、运行状态轮询、最近运行列表、弹框标题和「Actions 页面」链接全部跟随该填写值；手填值本地记忆，下次自动带出。
+
+**自动带上视频链接与标题**（打开弹框即自动填入，无需手动复制粘贴）：
+
+- **jable.tv 视频页**（`@match https://jable.tv/videos/*`）：从当前实时页面提取视频直链（播放器内联脚本里的 `hlsUrl`，即 m3u8）与标题（`og:title`）。
+- **pornhub 视频页**（`@match https://*.pornhub.com/view_video.php*`）：从当前实时页面提取 flashvars `mediaDefinitions` 里的 `"videoUrl"`（JSON 转义会自动反转义、HTML 实体自动解码）——**多清晰度取最高**（如 `720P_4000K_xxx.mp4/master.m3u8`）；`/video/get_media?s=...` 下载端点以 `# 下载端点:` 注释行带回（参考用，不进下载列表）。
+- **GitHub 仓库页**：从仓库快照目录 `tools/ytdlp/html/`（兼容旧路径 `tools/ytdlp/http/`）下的 `*.html` 快照提取——把视频页「另存为」HTML 放进该目录并提交推送，之后在仓库页面打开弹框即可一键触发。目录列举 + 每个文件的最近提交时间走 `api.github.com`（公开仓库无 Token 也可用，限流 60/h），拉取文件走 raw.githubusercontent.com（公开免鉴权），失败回退 contents API；刚推送的文件 raw CDN 约 5 分钟生效。
+- **多个快照时默认自动选中最近提交的那个**（= 最新保存的页面），弹框内的「页面快照」下拉可手动切换，切换后立即重新提取。
+- 提取结果写入两个参数：`urls` ← 视频直链（**标题、页面地址、下载端点均以 `#` 注释行带上**，`download.py` 的 `parse_urls` 会忽略 `#` 行，不影响下载）；`rename` ← 视频标题（做了文件名安全化；仅当 `rename` 为空或仍是上次自动填入值时才写，**不覆盖手填值**）。
+- 手填过 `urls` 后重新打开弹框不会覆盖；点「**载入页面视频**」可强制重新提取。
+
+**功能**：
+
+- 悬浮按钮可拖动、位置记忆；仅在 `smanx/gh-toolbox` 仓库页面与 jable.tv / pornhub 视频页显示（GitHub Turbo 导航自动感知，离开这几类页面自动隐藏）。
+- 弹框表单与 workflow 的 12 个 inputs 一一对应（每项带中文说明），填写值本地记忆，下次自动带出；「重置参数」一键还原默认值（同时清除自动带入的视频信息）。
+- 触发分支 `ref` 可改（默认 `main`；在 `/tree/<分支>` 或 `/blob/<分支>` 页面打开会自动带出该分支）；触发目标 workflow 手填（见上）。
+- 本地即时校验：`headers` 非法 JSON、`playlist_end` 非整数直接拦在弹框里，不会带到服务端才失败。
+- 触发后自动轮询新运行：排队中 → 进行中 → 成功/失败，附链接直跳 Actions 日志；弹框内还可查看 / 刷新最近 5 次运行。
+- 适配亮 / 暗色主题；Token 仅存本浏览器 Tampermonkey 存储。
+
+**安装**：
+
+1. 安装 Tampermonkey 扩展 → 新建脚本 → 粘贴 `tools/ytdlp/ytdlp-dispatch.user.js` 全文保存（或把该 `.user.js` 文件直接拖进任意标签页，Tampermonkey 会弹出安装确认页）。
+2. 准备 GitHub Token：
+   - 经典 PAT：勾选 `repo` scope；
+   - 细粒度 PAT：`Actions: read+write` + `Contents: read` + `Metadata: read`。
+3. 打开 <https://github.com/smanx/gh-toolbox> 任意页面或任意 jable.tv / pornhub 视频页，点右下角 **▶ yt-dlp** 悬浮按钮，弹框内粘贴 Token →「保存并验证」→（视频信息已自动带好）按需改参数 →「触发 Action」。
+
+**注意**：
+
+- 脚本走 `api.github.com` 的 `workflow_dispatch` 接口，Token 需对该仓库有写权限；Token 只保存在本地浏览器，**不要**写进仓库或分享截图。
+- 运行状态轮询最长 10 分钟，超时会给出 Actions 页面链接；超大任务建议直接去 Actions 页面查看。
+- m3u8 直链有时效性，过期后重新保存一次视频页 HTML（推送更新 `html/` 下的快照）即可。
+- 复用到其他工具（如 qinglong）：脚本默认触发目标已改为手填，一般无需改代码；只有要改**留空时的兜底默认值**才动 `CONFIG.workflowFile`，其余改 `CONFIG`（owner / repo / pageDirs / pageFiles / videoSites）与 `INPUTS`（inputs 定义），`@match` 同步调整即可。
+
 ### 注意事项
 
 - **完成日志**：每个文件下载完成即输出完整路径、大小与耗时——单文件一行含三项；播放列表等批量下载在整批结束后逐文件输出路径+大小，并给出本批合计耗时；任务结束汇总文件数与下载总耗时。
+- **下载过程日志**：解析（Extracting URL / Downloading webpage）、目标文件（Destination / Deleting existing file）、实时进度、合并（Merging）、跳过（has already been downloaded）、后处理等 yt-dlp 内部消息都会输出到 Actions 日志——不只是最终结果。进度按文件每 5 秒一行：`[进度] 文件名: 分片 x/y 45.3% 12.3MB/27.1MB 1.2MB/s 剩余 00:12`（分片字段仅 HLS/DASH 等分片下载有）。
+- **覆盖与跳过**（输入 `overwrite` / 环境变量 `YTDLP_OVERWRITE`）：不勾选（默认）时，下载前逐个检查目标文件，已存在即跳过不下载（HLS 下载历史 `.ts` 文件、计划名是 `.mp4` 的情况也能正确识别，不会重复下载）；勾选时强制重新下载——yt-dlp 会先删除已存在的目标文件再下载（等价 CLI `--force-overwrites`），下载失败旧文件已被删除，需自行承担风险。播放列表按条目粒度：全部已存在 → 整个跳过；部分缺失 → 只下缺失条目。
 - **yt-dlp 时效性**：workflow 每次 `pip install -U` 装最新版；仍可能遇到站点改版导致个别 URL 失败——脚本会跳过失败项继续下载其他 URL，最终以退出码 1 标记失败。
-- **大播放列表/频道**：首次会解析两遍（先查档案再下载），`YTDLP_PLAYLIST_END` 可限制规模。
+- **大播放列表/频道**：首次会解析两遍（先查目标文件再下载），`YTDLP_PLAYLIST_END` 可限制规模。
 - **时区**：cron 使用 UTC，默认 `0 18 * * *` = 北京时间 02:00。
 - **超时**：job `timeout-minutes: 360` 为 GitHub 托管 runner 上限，特大任务需拆分。
 - **转码模式**（`YTDLP_TRANSCODE`）：三者语义不同——`remux` = 换 mp4 封装且**流直接拷贝**（秒级、无损、码率与体积基本不变；源编码不兼容 mp4 时 ffmpeg 报错）；`recode` = **重编码**为 H.264/AAC（慢、有损、体积与耗时都会明显变化，用于源编码不兼容 MP4 的场景）；`none` = 不转码。**转换依赖 ffmpeg**：yt-dlp 的 remux/recode 本身就是调用 ffmpeg（等价 CLI 的 `--remux-video` / `--recode-video`），workflow 会在运行前确保 ffmpeg 可用；**本地运行必须自备 ffmpeg**，缺失时脚本直接报错并以退出码 2 结束（不会下半天最后给你一个 TS）。**注意一个 yt-dlp 的坑**：HLS/m3u8 的格式 ext 通常是 `mp4`，原生 remux/recode 后处理器会按扩展名判断「已是 mp4」而跳过，实际转换落在 FixupM3u8 上——它只做流拷贝，导致 recode 名不副实（两种模式输出一模一样）。因此 recode 模式下脚本会关掉 yt-dlp 的 fixup，让 TS 内容保留到下载后的探测层**真正重编码**。**三种模式下脚本都会用 ffprobe 探测每个产物文件的真实封装格式**（ffprobe 缺失时退化为 TS 包头嗅探）：内容是 TS 流但扩展名是 `.mp4` 的——`none` 如实改名为 `.ts`，`remux` 流拷贝转换，`recode` 重编码转换（转换失败回退保留 `.ts`）；内容是 MP4 却叫 `.ts` 的改回 `.mp4`；名实相符的文件一律不动。注意：recode 重编码耗时较长，大视频留意 6 小时 job 上限。

@@ -8,9 +8,12 @@
   1. 读取下载目标：环境变量 YTDLP_URLS 优先，其次本工具目录下的 urls.txt，
      也支持命令行直接传 URL（python tools/ytdlp/download.py <url> ...）
   2. 调用 yt-dlp Python API 执行下载（格式/封装/并发等通过环境变量控制）
-  3. 维护下载档案（默认 .ytdlp-archive.txt），避免重复下载
+  3. 维护下载档案（默认 .ytdlp-archive.txt）：记录已完成视频，仅作存档，
+     不再作为跳过判据——是否跳过只看目标文件是否存在（见 YTDLP_OVERWRITE）
   4. 每个文件下载完成后输出完整路径、大小与耗时
-  5. 可选：全部下载完成后上传到 Hugging Face datasets（默认关闭）
+  5. 下载过程全程可见：解析/目标文件/实时进度/合并等 yt-dlp 内部消息都会
+     输出（进度按文件每 5 秒一行：分片、百分比、已下/总大小、速度、剩余时间）
+  6. 可选：全部下载完成后上传到 Hugging Face datasets（默认关闭）
 
 环境变量：
   YTDLP_URLS             下载目标，换行或逗号分隔（优先于 urls.txt）
@@ -42,6 +45,11 @@
                          TS 流冒充 .mp4 时，remux 流拷贝转换、recode 真正重编码
   YTDLP_ARIA2            置 1/true/yes/on 启用 aria2c 多连接加速（未安装则回退内置下载器）
   YTDLP_ARIA2_ARGS       aria2c 附加参数，空格分隔（默认 -x 16 -s 16 -k 1M）
+  YTDLP_OVERWRITE        覆盖目标文件（默认关，即不勾选）：置 1/true/yes/on 时
+                          百分百触发下载——绕过档案与存在性检查，并让 yt-dlp 删除
+                          已存在的目标文件重新下载（直接覆盖）；不置时先检查目标
+                          文件是否已存在，已存在则跳过、不下载（HLS 场景 .ts/.mp4
+                          后缀偏差也能识别）
   YTDLP_HF_UPLOAD        置 1/true/yes/on 启用上传到 Hugging Face datasets（默认关）
   YTDLP_HF_REPO          HF dataset 仓库 ID（用户名/数据集名，如 smanx/my-videos）
   YTDLP_HF_PRIVATE       创建仓库时是否私有，1=私有(默认)/0=公开
@@ -85,11 +93,20 @@ def log(msg: str) -> None:
 
 
 class Logger:
-    """把 yt-dlp 的内部日志转发到标准输出（Actions 日志可见）。"""
+    """把 yt-dlp 的内部日志转发到标准输出（Actions 日志可见）。
+
+    yt-dlp 把普通过程消息（解析/目标文件/合并/跳过/删除旧文件…）也经过
+    logger.debug 输出（只有 write_debug 的真调试消息才带 [debug] 前缀），
+    所以这里对不带 [debug] 前缀的消息按普通信息打印，保证下载过程在
+    Actions 日志里可见；真调试日志仍由 YTDLP_VERBOSE 控制。
+    """
 
     def debug(self, msg):
-        if os.environ.get("YTDLP_VERBOSE"):
-            print(f"[yt-dlp][debug] {msg}", flush=True)
+        if msg.startswith("[debug]"):
+            if os.environ.get("YTDLP_VERBOSE"):
+                print(f"[yt-dlp][debug] {msg}", flush=True)
+        else:
+            print(f"[yt-dlp] {msg}", flush=True)
 
     def info(self, msg):
         print(f"[yt-dlp] {msg}", flush=True)
@@ -106,6 +123,14 @@ def env(name: str, default: str = "") -> str:
     if value is None or value.strip() == "":
         return default
     return value.strip()
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    """布尔型环境变量：1/true/yes/on 为真；0/false/no/off/空为假（空取默认值）。"""
+    raw = env(name).lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
 
 
 def env_int(name: str, default: int) -> int:
@@ -307,7 +332,7 @@ def build_opts() -> dict:
             log(f"已启用浏览器指纹伪装(impersonate): {target}（依赖 curl_cffi）")
 
     # aria2c 多连接加速（本机未安装时回退内置下载器）
-    if env("YTDLP_ARIA2").lower() in ("1", "true", "yes", "on"):
+    if env_bool("YTDLP_ARIA2"):
         if shutil.which("aria2c"):
             opts["external_downloader"] = "aria2c"
             opts["external_downloader_args"] = {
@@ -316,6 +341,16 @@ def build_opts() -> dict:
             log("已启用 aria2c 外部下载器加速")
         else:
             log("未检测到 aria2c，回退内置下载器（GitHub Actions 勾选后会自动安装；本地请先安装 aria2）")
+
+    # 覆盖模式（YTDLP_OVERWRITE，默认关）：勾选时百分百触发下载——
+    #   1. 脚本层不再做档案/存在性检查，一律下发下载；
+    #   2. yt-dlp 层 overwrites=True + continuedl=False（等价 CLI
+    #      --force-overwrites）：先删掉已存在的目标文件再重新下载，直接覆盖。
+    # 不勾选时相反：脚本层先查目标文件，已存在即跳过；yt-dlp 层保持默认
+    # （其内置的"已存在则跳过"作为兜底，覆盖播放列表里漏判的条目）。
+    if env_bool("YTDLP_OVERWRITE"):
+        opts["overwrites"] = True
+        opts["continuedl"] = False
     return opts
 
 
@@ -339,6 +374,54 @@ def fmt_duration(seconds: float) -> str:
         return f"{minutes} 分 {sec} 秒"
     hours, minutes = divmod(minutes, 60)
     return f"{hours} 小时 {minutes} 分 {sec} 秒"
+
+
+def fmt_eta(seconds) -> str:
+    """ETA 秒数格式化为 mm:ss / h:mm:ss；无有效值返回空串。"""
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    if seconds < 0:
+        return ""
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+# 下载进度汇报：同一文件两次汇报的最小间隔（秒）。yt-dlp 的进度条被
+# noprogress 关掉，这里在 progress_hooks 里自己按节流输出，保证
+# Actions 日志里能看到下载过程而不只是最终结果
+PROGRESS_INTERVAL = 5.0
+_progress_last: dict = {}  # 文件名 -> 上次汇报的单调时钟
+
+
+def report_download_progress(d: dict) -> None:
+    """输出一条下载进度（分片/百分比/大小/速度/剩余时间），按文件节流。"""
+    name = d.get("filename") or d.get("tmpfilename") or ""
+    label = Path(name).name if name else "?"
+    now = time.monotonic()
+    last = _progress_last.get(label)
+    if last is not None and now - last < PROGRESS_INTERVAL:
+        return
+    _progress_last[label] = now
+
+    parts = []
+    frag_i, frag_n = d.get("fragment_index"), d.get("fragment_count")
+    if frag_i is not None and frag_n:
+        parts.append(f"分片 {frag_i}/{frag_n}")
+    done = d.get("downloaded_bytes") or 0
+    total = d.get("total_bytes") or d.get("total_bytes_estimate")
+    if total:
+        parts.append(f"{done * 100 / total:.1f}%")
+        parts.append(f"{human_size(done)}/{human_size(total)}")
+    elif done:
+        parts.append(human_size(done))
+    if d.get("speed"):
+        parts.append(f"{human_size(d['speed'])}/s")
+    if d.get("eta"):
+        parts.append(f"剩余 {fmt_eta(d['eta'])}")
+    log(f"[进度] {label}: {' '.join(parts)}")
 
 
 _TS_EXTS = {".ts", ".mts", ".m2ts"}
@@ -408,7 +491,38 @@ def _sniff_ts(path: Path) -> bool:
     return len(head) >= 377 and head[0] == 0x47 and head[188] == 0x47 and head[376] == 0x47
 
 
-def fix_mislabeled_files(files: list, transcode: str) -> list:
+# 预判目标文件存在性时，除 prepare_filename 的计划名外，还把同 stem 的常见
+# 媒体后缀都查一遍：yt-dlp 对 HLS(m3u8) 常把 TS 内容命名成 .mp4，脚本书事
+# 后又会按真实封装修正后缀（.ts/.mp4），只看计划名会漏判已存在的文件
+_EXISTENCE_EXTS = ("mp4", "mkv", "webm", "mov", "m4v", "flv", "ts", "m2ts",
+                   "avi", "wmv", "mpg", "mpeg", "3gp")
+
+
+def find_existing_target(ydl: YoutubeDL, info: dict) -> Path | None:
+    """预判条目下载后的目标文件是否已存在，返回已存在的路径，不存在返回 None。
+
+    用 yt-dlp 的 prepare_filename 按当前输出模板算计划文件名；由于合并/
+    封装修正可能改变后缀，同 stem 的常见媒体扩展名都检查一遍。预判失败
+    （模板字段缺失等）返回 None——不阻塞下载，由 yt-dlp 自身的跳过逻辑兜底。
+    """
+    try:
+        planned = ydl.prepare_filename(info)
+    except Exception:
+        return None
+    if not planned or planned == "-":
+        return None
+    planned = Path(planned)
+    if planned.is_file():
+        return planned
+    stem = planned.with_suffix("")
+    for ext in _EXISTENCE_EXTS:
+        cand = stem.with_suffix(f".{ext}")
+        if cand.is_file():
+            return cand
+    return None
+
+
+def fix_mislabeled_files(files: list, transcode: str, overwrite: bool = False) -> list:
     """按真实封装格式修正本次产物的后缀/封装，返回修正后的 (路径, 大小) 列表。
 
     背景：HLS(m3u8) 下载常产出「内容是 TS 流、扩展名是 .mp4」的文件（环境
@@ -421,6 +535,9 @@ def fix_mislabeled_files(files: list, transcode: str) -> list:
       - 其余（名实相符）不动
     探测优先 ffprobe；ffprobe 缺失时退化为 TS 包头嗅探（无需外部工具，
     但此时无法识别「MP4 内容被命名成 .ts」的情况）。
+
+    overwrite=True（覆盖模式）时，改名/归位直接替换已存在的同名文件；
+    否则保持原行为：追加 -1/-2 后缀，不覆盖任何已有文件。
     """
     if not files:
         return files
@@ -453,7 +570,10 @@ def fix_mislabeled_files(files: list, transcode: str) -> list:
                 if desired == path:
                     path.unlink()  # 目标名就是源文件自己：删源后才能归位
                 if desired.exists():
-                    return tmp  # 目标名被其他文件占用，保留临时唯一名
+                    if overwrite:
+                        desired.unlink()  # 覆盖模式：直接替换旧文件
+                    else:
+                        return tmp  # 目标名被其他文件占用，保留临时唯一名
                 tmp.rename(desired)
                 return desired
 
@@ -470,14 +590,23 @@ def fix_mislabeled_files(files: list, transcode: str) -> list:
             log("转换为 MP4 失败，保留 TS 原始数据")
             transcode = "none"  # 后续文件同批失败大概率同样失败，直接走改名兜底
 
+        def rename_fix(src: Path, dst: Path) -> Path:
+            """如实改名到目标后缀：默认不覆盖已有文件（追加唯一后缀），
+            覆盖模式直接替换。"""
+            if dst.exists():
+                if overwrite:
+                    dst.unlink()
+                else:
+                    dst = _unique_path(dst)
+            src.rename(dst)
+            return dst
+
         if is_ts and ext not in _TS_EXTS:
-            dst = _unique_path(path.with_suffix(".ts"))
-            path.rename(dst)
+            dst = rename_fix(path, path.with_suffix(".ts"))
             log(f"探测到 TS 流但扩展名为 {ext or '无'}，已如实改名为: {dst.name}")
             out.append((dst, size))
         elif is_mp4 and ext in _TS_EXTS:
-            dst = _unique_path(path.with_suffix(".mp4"))
-            path.rename(dst)
+            dst = rename_fix(path, path.with_suffix(".mp4"))
             log(f"探测到 MP4 封装但扩展名为 {ext}，已如实改名为: {dst.name}")
             out.append((dst, size))
         else:
@@ -489,7 +618,8 @@ fix_mislabeled_files._warned = False
 
 
 def report_downloads(out_root: Path, archive_path: Path, t0: float,
-                     elapsed: float, reported: set, transcode: str = "none") -> list:
+                     elapsed: float, reported: set, transcode: str = "none",
+                     overwrite: bool = False) -> list:
     """报告本次下载窗口内产出/更新的文件：完整路径、大小、耗时。
 
     以 st_mtime >= t0 判定文件归属（下载/合并/转码都会刷新 mtime，
@@ -513,7 +643,7 @@ def report_downloads(out_root: Path, archive_path: Path, t0: float,
             continue
         reported.add(p)
         found.append((p, stat.st_size))
-    found = fix_mislabeled_files(found, transcode)
+    found = fix_mislabeled_files(found, transcode, overwrite)
     if len(found) == 1:
         p, size = found[0]
         log(f"下载完成: {p}（{human_size(size)}，耗时 {fmt_duration(elapsed)}）")
@@ -603,15 +733,26 @@ def main() -> int:
     archive_path = Path(env("YTDLP_ARCHIVE") or TOOL_DIR / ".ytdlp-archive.txt")
     archive = load_archive(archive_path)
     log(f"下载档案 {archive_path} 已有 {len(archive)} 条记录")
+    # 覆盖模式（YTDLP_OVERWRITE）：勾选=百分百触发下载并覆盖已存在文件；
+    # 不勾选=先检查目标文件，已存在则跳过不下载
+    overwrite = env_bool("YTDLP_OVERWRITE")
+    if overwrite:
+        log("模式: 覆盖目标文件（强制重新下载，覆盖已存在的文件）")
+    else:
+        log("模式: 不覆盖（目标文件已存在则跳过下载；需要重下请勾选 overwrite）")
     out_root = Path(opts["outtmpl"]).parent  # 产物扫描根目录
     reported: set = set()  # 已报告的产物文件（跨 URL 去重）
     total_files = 0
     total_time = 0.0
 
     def on_progress(d: dict) -> None:
-        # 每个视频下载完成立即记档：中断/失败也不会重复下载已完成部分
+        if d.get("status") == "downloading":
+            # 下载过程可见：进度按文件节流输出（见 report_download_progress）
+            report_download_progress(d)
+            return
         if d.get("status") != "finished":
             return
+        # 每个视频下载完成立即记档：中断/失败也不会重复下载已完成部分
         info = d.get("info_dict") or {}
         key = info_key(info)
         if key and key not in archive:
@@ -650,11 +791,14 @@ def main() -> int:
             entries = info.get("entries")
             if entries is None:
                 # ---- 单个视频 ----
+                # 不覆盖模式：目标文件已存在则跳过（含 HLS 的 .ts/.mp4 后缀偏差）
+                if not overwrite:
+                    existing = find_existing_target(ydl, info)
+                    if existing:
+                        log(f"目标文件已存在，跳过: {existing.name}")
+                        skipped.append(url)
+                        continue
                 key = info_key(info)
-                if key and key in archive:
-                    log(f"已下载过，跳过: {info.get('title') or url}")
-                    skipped.append(url)
-                    continue
                 t0 = time.time()
                 try:
                     ydl.download([url])
@@ -667,7 +811,8 @@ def main() -> int:
                 if key:
                     archive.add(key)
                     save_archive(archive_path, archive)
-                total_files += len(report_downloads(out_root, archive_path, t0, elapsed, reported, transcode))
+                total_files += len(report_downloads(
+                    out_root, archive_path, t0, elapsed, reported, transcode, overwrite))
                 ok.append(url)
                 continue
 
@@ -681,10 +826,18 @@ def main() -> int:
                 log(f"注意: 播放列表含 {len(items)} 个条目，但命名模板缺少唯一占位符"
                     f"（如 %(playlist_index)s、%(title)s），文件可能互相覆盖")
             keys = [k for k in (info_key(e) for e in items) if k]
-            if keys and all(k in archive for k in keys):
-                log(f"全部条目已下载过，跳过: {info.get('title') or url}")
-                skipped.append(url)
-                continue
+            if not overwrite:
+                # 逐条目检查目标文件：全部已存在 -> 整个跳过；部分缺失 ->
+                # 下载整个播放列表，已存在条目由 yt-dlp 自动跳过（默认参数下
+                # 其内置"文件已存在则跳过"逻辑对每个条目生效）
+                present = sum(1 for e in items if find_existing_target(ydl, e))
+                if present == len(items):
+                    log(f"全部 {len(items)} 个条目目标文件已存在，跳过: {info.get('title') or url}")
+                    skipped.append(url)
+                    continue
+                if present:
+                    log(f"{present}/{len(items)} 个条目目标文件已存在，仅下载缺失条目"
+                        "（已存在条目 yt-dlp 会自动跳过）")
             t0 = time.time()
             try:
                 ydl.download([url])
@@ -697,12 +850,13 @@ def main() -> int:
             for key in keys:
                 archive.add(key)
             save_archive(archive_path, archive)
-            total_files += len(report_downloads(out_root, archive_path, t0, elapsed, reported, transcode))
+            total_files += len(report_downloads(
+                out_root, archive_path, t0, elapsed, reported, transcode, overwrite))
             ok.append(url)
 
     # ---- 全部下载完毕：可选上传到 Hugging Face datasets（默认关闭） ----
     upload_failed = False
-    if env("YTDLP_HF_UPLOAD").lower() in ("1", "true", "yes", "on"):
+    if env_bool("YTDLP_HF_UPLOAD"):
         repo_id = env("YTDLP_HF_REPO")
         hf_path = env("YTDLP_HF_PATH")
         has_files = out_root.is_dir() and any(p.is_file() for p in out_root.rglob("*"))
@@ -712,7 +866,7 @@ def main() -> int:
         elif not has_files:
             log(f"输出目录 {out_root} 没有文件，跳过 HF 上传")
         else:
-            private = env("YTDLP_HF_PRIVATE", "1").lower() in ("1", "true", "yes", "on")
+            private = env_bool("YTDLP_HF_PRIVATE", True)
             target = (hf_path.strip("/") + "/") if hf_path else "根路径"
             log(f"上传到 Hugging Face datasets: {repo_id}"
                 f"（{'私有' if private else '公开'}仓库，目标路径 {target}）")
