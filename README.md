@@ -226,7 +226,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 - **pornhub 视频页**（`@match https://*.pornhub.com/view_video.php*`）：从当前实时页面提取 flashvars `mediaDefinitions` 里的 `"videoUrl"`（JSON 转义会自动反转义、HTML 实体自动解码）——**多清晰度取最高**（如 `720P_4000K_xxx.mp4/master.m3u8`）；`/video/get_media?s=...` 下载端点以 `# 下载端点:` 注释行带回（参考用，不进下载列表）。
 - **GitHub 仓库页**：从仓库快照目录 `tools/ytdlp/html/`（兼容旧路径 `tools/ytdlp/http/`）下的 `*.html` 快照提取——把视频页「另存为」HTML 放进该目录并提交推送，之后在仓库页面打开弹框即可一键触发。目录列举 + 每个文件的最近提交时间走 `api.github.com`（公开仓库无 Token 也可用，限流 60/h），拉取文件走 raw.githubusercontent.com（公开免鉴权），失败回退 contents API；刚推送的文件 raw CDN 约 5 分钟生效。
 - **多个快照时默认自动选中最近提交的那个**（= 最新保存的页面），弹框内的「页面快照」下拉可手动切换，切换后立即重新提取。
-- 提取结果写入两个参数：`urls` ← 视频直链（**标题、页面地址、下载端点均以 `#` 注释行带上**，`download.py` 的 `parse_urls` 会忽略 `#` 行，不影响下载）；`rename` ← 视频标题（做了文件名安全化）。两者**不持久化**，每次打开弹框都会重新提取，可点「**载入页面视频**」手动刷新。
+- 提取结果写入两个参数：`urls` ← **只写视频直链本身**（纯 URL，一行一个，不放任何注释行）；`rename` ← 视频标题（做了文件名安全化）。两者**不持久化**，每次打开弹框都会重新提取，可点「**载入页面视频**」手动刷新。
 
 **功能**：
 

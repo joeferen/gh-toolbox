@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         gh-toolbox ytdlp 一键触发器
 // @namespace    https://github.com/smanx/gh-toolbox/tree/main/tools/ytdlp
-// @version      1.6.0
+// @version      1.6.1
 // @description  在 smanx/gh-toolbox 仓库页面或 jable.tv / pornhub 视频页显示悬浮按钮，点击弹框填写参数，一键手动触发「yt-dlp 下载器」GitHub Action（workflow_dispatch）；自动从仓库页面快照或当前视频页提取视频直链与标题填入 urls/rename 参数，并轮询展示运行状态与最近运行记录。
 // @author       smanx
 // @match        https://github.com/smanx/gh-toolbox*
@@ -33,8 +33,7 @@
  *          兼容旧路径 tools/ytdlp/http/）下的 *.html 快照提取。默认自动选中
  *          **最近提交**的快照（commits API 取提交时间），也可用弹框内的「页面快照」
  *          下拉切换；拉取走 raw.githubusercontent.com，失败回退 contents API；
- *        - urls   ← 视频直链（标题与页面地址以 # 注释行带上，download.py 的
- *          parse_urls 会忽略 # 行）；
+ *        - urls   ← 只写视频直链本身（纯 URL，一行一个，无注释行）；
  *        - rename ← 视频标题（文件名安全化）。
  *      urls / rename 不保存，每次打开弹框都会重新提取（避免把上一个视频的链接
  *      带进下一次）；headers 栏为空时默认带上 UA + Referer（站点 origin）；
@@ -52,7 +51,7 @@
  *   - jable.tv：内联脚本 `hlsUrl = '...m3u8'`；
  *   - pornhub：flashvars mediaDefinitions 里的 `"videoUrl": "..."`（JSON 转义
  *     `\/` 先反转义），多清晰度（240P/480P/720P_4000K_xxx.mp4/master.m3u8）
- *     取最高；`/video/get_media?s=...` 下载端点作为 `# 下载端点:` 注释行带回；
+ *     取最高；`/video/get_media?s=...` 下载端点不进 urls；
  *   - 标题：og:title > .video-info h4 > <title>（按 canonical 主机名剥掉站点后缀，
  *     如 " - Pornhub.com" / " - Jable.TV | ..."）。
  *
@@ -421,17 +420,16 @@
   }
 
   // 解析页面 HTML，提取视频直链与标题。
-  // 返回 { title, pageUrl, videos: [{title, url}], alt }；videos 为空表示没找到直链。
+  // 返回 { title, pageUrl, videos: [{title, url}] }；videos 为空表示没找到直链。
   //   - 直链（按优先级，前者无结果才走后一种）：
   //     1) jable.tv：内联脚本 hlsUrl 赋值；
   //     2) pornhub：mediaDefinitions 里的 "videoUrl": "..."（JSON 转义，先反转义）；
   //     3) 兜底：页面里的 .m3u8 / .mp4 直链（兼容 https:\/\/ 转义形式）。
   //     多清晰度取最高（如 720P_4000K_xxx.mp4/master.m3u8）；get_media/download
-  //     下载端点不进 urls，作为 alt 以 `# 下载端点:` 注释行带回；预览片
-  //     （preview/screenshot/thumbvtt）过滤。
+  //     下载端点与预览片（preview/screenshot/thumbvtt）不作为候选。
   //   - 标题：og:title > .video-info h4 > <title>（按 canonical 主机名剥掉站点后缀，
   //     如 " - Pornhub.com" / " - Jable.TV | ..."）。
-  //   - 页面地址：canonical > og:url（作为注释行带回，源链接过期时可据此重新保存页面）。
+  //   - 页面地址：canonical > og:url（用于 defaultHeaders 的 Referer origin）。
   function extractPageVideos(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     let title = '';
@@ -479,13 +477,10 @@
     });
     const isDownloadEp = (u) => /\/get_media\b|\/download\b/i.test(u);
     const isPreview = (u) => /preview|screenshot|thumbvtt/i.test(u);
-    const streams = norm.filter((u) => !isDownloadEp(u) && !isPreview(u));
-    const alts = norm.filter(isDownloadEp);
-    const primary = pickBestVideo(streams.length ? streams : norm);
-    let alt = alts.length ? alts[0] : '';
-    if (alt && alt === primary) alt = '';
+    const candidates = norm.filter((u) => !isDownloadEp(u) && !isPreview(u));
+    const primary = pickBestVideo(candidates.length ? candidates : norm);
     const videos = primary ? [{ title, url: primary }] : [];
-    return { title, pageUrl, videos, alt };
+    return { title, pageUrl, videos };
   }
 
   // 文件名安全化：去掉文件系统非法字符（rename 参数用）
@@ -575,11 +570,7 @@
           : '页面中未找到视频直链，请确认保存的是视频详情页（含播放器 script）', 'err');
         return;
       }
-      const lines = [];
-      if (parsed.title) lines.push('# ' + parsed.title.replace(/,/g, '，')); // 标题里的 ASCII 逗号换全角，防旧版 parse_urls 逗号切分把注释切碎
-      if (parsed.pageUrl) lines.push('# 页面: ' + parsed.pageUrl);
-      if (parsed.alt) lines.push('# 下载端点: ' + parsed.alt);
-      parsed.videos.forEach((v) => lines.push(v.url));
+      const lines = parsed.videos.map((v) => v.url); // urls 只放下载地址本身，不放注释行（标题已在 rename）
       urlsNode.value = lines.join('\n'); // urls / rename 不持久化，仅写入弹框
       if (CONFIG.autoFillRename && renameNode && parsed.title) {
         renameNode.value = sanitizeFileName(parsed.title);
@@ -945,8 +936,8 @@
       const urlsBox = urlsRow.closest('.ytdlp-t-row');
       if (urlsBox) {
         urlsBox.appendChild(el('div', 'ytdlp-t-hint', videoSource() === 'live'
-          ? '打开弹框时自动提取当前页面的视频直链与标题（# 开头为注释行，下载时忽略）；本栏不保存，每次打开都会重新提取'
-          : '打开弹框时自动从上方选中的快照提取视频直链与标题（# 开头为注释行，下载时忽略）；本栏不保存，每次打开都会重新提取，可点「载入页面视频」手动刷新'));
+          ? '打开弹框时自动提取当前页面的下载地址（只放 URL 本身，标题在 rename；本栏不保存，每次打开都会重新提取）'
+          : '打开弹框时自动从上方选中的快照提取下载地址（只放 URL 本身；本栏不保存，每次打开都会重新提取，可点「载入页面视频」手动刷新'));
       }
     }
     formSec.appendChild(formEl);
