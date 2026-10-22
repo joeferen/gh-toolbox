@@ -4,6 +4,7 @@
 // @version      1.6.1
 // @description  在 gh-toolbox 仓库页面或 jable.tv / pornhub 视频页显示悬浮按钮，点击弹框填写参数，一键手动触发「yt-dlp 下载器」GitHub Action（workflow_dispatch）；自动从仓库页面快照或当前视频页提取视频直链与标题填入 urls/rename 参数，并轮询展示运行状态与最近运行记录。
 // @match        https://github.com/*/gh-toolbox*
+// @match        https://*.missav.ws/*
 // @match        https://jable.tv/videos/*
 // @match        https://*.pornhub.com/view_video.php*
 // @grant        GM_setValue
@@ -97,6 +98,10 @@
     videoSites: [
       { host: /(^|\.)jable\.tv$/, path: /^\/videos\// },
       { host: /(^|\.)pornhub\.com$/, path: /^\/view_video\.php/ },
+      // missav：/jur-881、/cn/jur-881、/dm39/jur-881 等番号详情页。
+      // 判据：路径最后一段是番号（字母+数字+连字符，必含数字），列表页如
+      // /actress/xxx、/genres/xxx、/ 均不匹配
+      { host: /(^|\.)missav\.ws$/, path: /^\/(?:[\w-]+\/)?[\w-]*\d[\w-]*\/?$/i },
     ],
   };
 
@@ -216,6 +221,9 @@
   // 每次打开弹框都会从页面/快照重新提取，避免把上一个视频的链接带进下一次。
   const NO_SAVE = { urls: true, rename: true };
 
+  // 悬浮按钮距视口边缘的最小留白（px）：保证任何窗口尺寸下按钮都可见、可抓住拖回
+  const FAB_MARGIN = 4;
+
   // ---------------------------------------------------------------------------
   // GitHub API 封装（GM_xmlhttpRequest 跨源；降级 fetch）
   // ---------------------------------------------------------------------------
@@ -332,6 +340,36 @@
       .replace(/&gt;/gi, '>')
       .replace(/&quot;/gi, '"')
       .replace(/&#39;|&apos;/gi, "'");
+  }
+
+  // 解密页面里的 p,a,c,k,e,d packed eval 块（missav 等站点用这招藏 m3u8 直链）。
+  // 只做「字典替换」这一无害还原，不 eval；返回解密后的源码片段数组。
+  function unpackPackedBlocks(html) {
+    const out = [];
+    const re = /}\s*\(\s*'((?:[^'\\]|\\.)*)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'((?:[^'\\]|\\.)*)'\s*\.split\('\|'\)/g;
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      try {
+        const payload = unescapeJsString(m[1]);
+        const a = parseInt(m[2], 10) || 0;
+        const c = parseInt(m[3], 10) || 0;
+        const dict = unescapeJsString(m[4]).split('|');
+        if (!c || !dict.length) continue;
+        // 还原时按 token 长度从长到短替换，避免短 token 抢先替换破坏长 token
+        const keys = [];
+        for (let i = 0; i < c; i++) {
+          const k = i.toString(36);
+          if (dict[i] && dict[i] !== k) keys.push([k, dict[i]]);
+        }
+        keys.sort((x, y) => y[0].length - x[0].length);
+        let src = payload;
+        keys.forEach(([k, v]) => {
+          src = src.replace(new RegExp('\\b' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g'), v);
+        });
+        if (src !== payload) out.push(src);
+      } catch (e) { /* 解不开就跳过 */ }
+    }
+    return out;
   }
 
   // 多个清晰度里取最高（720P_4000K_xxx.mp4/master.m3u8 → 720）；无清晰度标记的排最后
@@ -467,6 +505,14 @@
       const re3 = /(https?:\\?\/\\?\/[^\s'"<>()]+?\.(?:m3u8|mp4)(?:\?[^\s'"<>()]*)?)/gi;
       while ((m = re3.exec(html)) !== null) raws.push(m[1]);
     }
+    // missav 等站点把直链藏进 p,a,c,k,e,d packed eval 里，先解密再提取
+    const packedUrls = [];
+    unpackPackedBlocks(html).forEach((src) => {
+      let mm;
+      const re4 = /(https?:\/\/[^\s'"<>()]+?\.(?:m3u8|mp4)(?:\?[^\s'"<>()]*)?)/gi;
+      while ((mm = re4.exec(src)) !== null) packedUrls.push(mm[1]);
+    });
+    if (!raws.length) packedUrls.forEach((u) => raws.push(u));
     const norm = [];
     raws.forEach((r) => {
       const u = decodeEntities(unescapeJsString(r)).trim();
@@ -474,6 +520,16 @@
       if (!/^https?:\/\//i.test(u)) return;
       norm.push(u);
     });
+    // 前面几条正则可能只匹配到页面里的示例/占位值（如 missav 内联文档代码中的
+    // example.com），此时 packed 解密拿到的真实直链优先采用
+    const isPlaceholder = (u) => /^https?:\/\/(www\.)?example\.(com|org|net)\b/i.test(u);
+    if (norm.length && norm.every(isPlaceholder) && packedUrls.length) {
+      norm.length = 0;
+      packedUrls.forEach((u) => {
+        const v = decodeEntities(unescapeJsString(u)).trim();
+        if (v && norm.indexOf(v) === -1) norm.push(v);
+      });
+    }
     const isDownloadEp = (u) => /\/get_media\b|\/download\b/i.test(u);
     const isPreview = (u) => /preview|screenshot|thumbvtt/i.test(u);
     const candidates = norm.filter((u) => !isDownloadEp(u) && !isPreview(u));
@@ -611,7 +667,8 @@
   const CSS = `
 #ytdlp-t-fab{position:fixed;right:24px;bottom:96px;z-index:2147483000;display:flex;align-items:center;gap:6px;
   padding:10px 16px;border-radius:999px;background:#1f883d;color:#fff;font:600 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;
-  cursor:pointer;user-select:none;box-shadow:0 4px 14px rgba(31,35,40,.25);border:1px solid rgba(27,31,36,.15);touch-action:none}
+  cursor:pointer;user-select:none;box-shadow:0 4px 14px rgba(31,35,40,.25);border:1px solid rgba(27,31,36,.15);touch-action:none;
+  max-width:calc(100vw - 48px);max-height:calc(100vh - 136px);overflow:hidden;white-space:nowrap;box-sizing:border-box}
 #ytdlp-t-fab:hover{background:#1a7f37}
 #ytdlp-t-mask{position:fixed;inset:0;z-index:2147483001;background:rgba(31,35,40,.5);display:flex;align-items:center;justify-content:center;padding:20px}
 #ytdlp-t-panel{width:min(720px,94vw);max-height:88vh;overflow:auto;background:#fff;color:#1f2328;border:1px solid #d1d9e0;border-radius:12px;
@@ -803,15 +860,70 @@
     fabEl.addEventListener('pointerdown', onFabDown);
     fabEl.addEventListener('click', onFabClick);
     document.body.appendChild(fabEl);
+    clampFabPos();
+    // 初始化时 offsetWidth 可能还是 0（CSS/字体未加载完），布局稳定后再夹一次兜底
+    requestAnimationFrame(clampFabPos);
+    window.addEventListener('load', clampFabPos);
+    // 窗口缩放 / 分屏拖动 / 转屏 / 移动端 pinch-zoom 都可能把按钮甩出屏幕，逐一监听夹回
+    window.addEventListener('resize', clampFabPos);
+    window.addEventListener('orientationchange', clampFabPos);
+    if (window.visualViewport && window.visualViewport.addEventListener) {
+      // 移动端 pinch-zoom、软键盘弹起时 window 尺寸不变、只有 visualViewport 变
+      window.visualViewport.addEventListener('resize', clampFabPos);
+      window.visualViewport.addEventListener('scroll', clampFabPos);
+    }
+  }
+
+  // 视口尺寸：优先 visualViewport（移动端 pinch-zoom / 软键盘时 window 尺寸不准），回退 window
+  function viewportSize() {
+    if (window.visualViewport) {
+      return { w: window.visualViewport.width, h: window.visualViewport.height };
+    }
+    return { w: window.innerWidth, h: window.innerHeight };
+  }
+
+  // 以「距右/下边缘的偏移」定位按钮。
+  // 这样窗口缩放、浏览器缩放、分屏拖动时按钮跟着边缘走，天然不会跑出屏幕；
+  // 只有窗口缩到放不下按钮时，才把偏移夹到最小留白。
+  function applyFabEdge(right, bottom) {
+    fabEl.style.left = 'auto';
+    fabEl.style.top = 'auto';
+    fabEl.style.right = right + 'px';
+    fabEl.style.bottom = bottom + 'px';
+  }
+
+  // 把按钮夹回视口内（初始化 / resize / orientationchange / 打开弹框时调用）
+  function clampFabPos() {
+    if (!fabEl || fabEl.style.display === 'none') return;
+    if (!fabEl.style.right || fabEl.style.right === 'auto') return; // 未拖动过：CSS 右下角定位，自适应无需处理
+    const w = fabEl.offsetWidth, h = fabEl.offsetHeight;
+    const vp = viewportSize();
+    const maxRight = Math.max(FAB_MARGIN, vp.w - w - FAB_MARGIN);
+    const maxBottom = Math.max(FAB_MARGIN, vp.h - h - FAB_MARGIN);
+    const right = Math.min(Math.max(parseFloat(fabEl.style.right) || 0, FAB_MARGIN), maxRight);
+    const bottom = Math.min(Math.max(parseFloat(fabEl.style.bottom) || 0, FAB_MARGIN), maxBottom);
+    applyFabEdge(right, bottom);
+    // 位置被修正时回存，下次打开即用修正后的偏移
+    const cur = store.get(KEY.fabPos, null);
+    if (!cur || cur.right !== Math.round(right) || cur.bottom !== Math.round(bottom)) {
+      store.set(KEY.fabPos, { right: Math.round(right), bottom: Math.round(bottom) });
+    }
   }
 
   function restoreFabPos() {
     const pos = store.get(KEY.fabPos, null);
-    if (pos && typeof pos === 'object' && typeof pos.x === 'number' && typeof pos.y === 'number') {
-      fabEl.style.left = pos.x + 'px';
-      fabEl.style.top = pos.y + 'px';
-      fabEl.style.right = 'auto';
-      fabEl.style.bottom = 'auto';
+    if (!pos || typeof pos !== 'object') return;
+    if (typeof pos.right === 'number' && typeof pos.bottom === 'number') {
+      applyFabEdge(pos.right, pos.bottom);
+      return;
+    }
+    // 兼容旧格式 {x, y}（left/top 绝对坐标）：换算成右/下边缘偏移。
+    // 初始化时 offsetWidth 可能还是 0（未布局），用一个保守估值，避免算出越界偏移；
+    // 真正的精确夹取由随后的 clampFabPos() 在布局稳定后完成。
+    if (typeof pos.x === 'number' && typeof pos.y === 'number') {
+      const w = fabEl.offsetWidth || 100, h = fabEl.offsetHeight || 40;
+      const vp = viewportSize();
+      applyFabEdge(Math.max(FAB_MARGIN, vp.w - pos.x - w), Math.max(FAB_MARGIN, vp.h - pos.y - h));
     }
   }
 
@@ -830,19 +942,23 @@
       moved = true;
       fabEl._dragMoved = true;
       const w = fabEl.offsetWidth, h = fabEl.offsetHeight;
-      const x = Math.min(Math.max(ev.clientX - offX, 4), window.innerWidth - w - 4);
-      const y = Math.min(Math.max(ev.clientY - offY, 4), window.innerHeight - h - 4);
-      fabEl.style.left = x + 'px';
-      fabEl.style.top = y + 'px';
-      fabEl.style.right = 'auto';
-      fabEl.style.bottom = 'auto';
+      const vp = viewportSize();
+      // 目标 left/top 直接换算成右/下边缘偏移并夹取，任何窗口尺寸下都不会出界
+      const maxRight = Math.max(FAB_MARGIN, vp.w - w - FAB_MARGIN);
+      const maxBottom = Math.max(FAB_MARGIN, vp.h - h - FAB_MARGIN);
+      const right = Math.min(Math.max(vp.w - (ev.clientX - offX) - w, FAB_MARGIN), maxRight);
+      const bottom = Math.min(Math.max(vp.h - (ev.clientY - offY) - h, FAB_MARGIN), maxBottom);
+      applyFabEdge(right, bottom);
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       if (moved) {
-        const rect2 = fabEl.getBoundingClientRect();
-        store.set(KEY.fabPos, { x: Math.round(rect2.left), y: Math.round(rect2.top) });
+        // 存右/下边缘偏移：之后窗口怎么缩放，按钮都相对边缘定位，不会跑出屏幕
+        store.set(KEY.fabPos, {
+          right: Math.round(parseFloat(fabEl.style.right) || 0),
+          bottom: Math.round(parseFloat(fabEl.style.bottom) || 0),
+        });
       }
     };
     window.addEventListener('pointermove', onMove);
@@ -1396,6 +1512,7 @@
     rootEl.style.display = '';
     applyTheme();
     updateWorkflowLabels();
+    clampFabPos(); // 弹框打开前确保按钮在屏内（弹框会挡住它，但不能让它跑到屏幕外）
     refreshRecentRuns();
     autoFillFromPage(); // 打开弹框即重新提取视频链接与标题（urls/rename 不持久化）
   }

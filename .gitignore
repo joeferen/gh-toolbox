@@ -21,3 +21,4 @@ tools/*/cookies.txt
 __pycache__/
 *.pyc
 tools/ytdlp/html
+html/*
