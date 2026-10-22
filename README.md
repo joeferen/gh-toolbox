@@ -177,7 +177,7 @@ base64 -w0 cookies.txt
 
 ### 油猴脚本一键触发（可选）
 
-`tools/m3u8/m3u8-dispatch.user.js` 是 ytdlp 油猴脚本的姊妹版，功能完全一致：在仓库页面或 jable.tv / pornhub / missav.ws 视频页右下角显示悬浮按钮（紫色 **⬇ m3u8**，与 ytdlp 的绿色按钮并存且位置各自记忆），点击弹框填参数一键触发本 workflow，并轮询展示运行状态。差异仅在：
+`tools/m3u8/m3u8-dispatch.user.js` 是 ytdlp 油猴脚本的姊妹版，功能完全一致：在仓库页面或 jable.tv / pornhub / missav（.ai/.ws/.com/.live/missav123.com 等镜像域）视频页右下角显示悬浮按钮（紫色 **⬇ m3u8**，与 ytdlp 的绿色按钮并存且位置各自记忆），点击弹框填参数一键触发本 workflow，并轮询展示运行状态。差异仅在：
 
 - 默认触发目标为 `m3u8.yml`（N_m3u8DL-RE 下载器）；触发目标 owner/repo/workflow 同样全部手填、不写死。
 - 弹框表单与 m3u8.yml 的 inputs 一一对应（urls / select_video / auto_select / save_name / overwrite / mux_format / thread_count / headers / hf_upload / hf_repo / hf_path / extra_args）。
@@ -185,22 +185,51 @@ base64 -w0 cookies.txt
 - 视频页打开时，页面标题（文件名安全化）自动填入 `save_name` 栏——一键触发时标题即产物文件名；该栏与 `urls` 都不持久化，每次打开弹框都会重新提取（可手动改，也可点「载入页面视频」刷新）。
 - 存储前缀 `m3u8_trigger_`，与 ytdlp 脚本的配置互不干扰；两脚本可同时安装。
 
+> **missav 域名会变**：`.ws` / `.com` 被部分地区封锁后主站迁到 `.ai`，另有 `.live`、`missav123.com` 等镜像。脚本的 `@match` 已覆盖这些域名，并额外用 `@include https://*.missav.*/*` 兜底后续新后缀。如果换了全新域名仍看不到按钮，在 Tampermonkey 里给脚本手动加一条对应的 `@match` 即可（改完需重新安装/更新脚本，元数据只在安装时读取）。
+
 安装方式与 Token 权限要求见「ytdlp 工具说明 → 油猴脚本一键触发」，两者一致。
 
-#### 弹框双 tab：GitHub Action 触发 / 通过 aria2 下载
+#### 弹框三个 tab：GitHub Action 触发 / 通过 aria2 下载 / 发送到 MediaGo
 
-弹框内部分两个 tab（与 ytdlp 脚本一致，上次停留的 tab 会记住）：
+弹框内部分三个 tab（上次停留的 tab 会记住）：
 
 | tab | 作用 |
 |---|---|
 | **GitHub Action 触发** | 原有流程：填 workflow_dispatch 参数 → 用 GitHub Token 触发 workflow → 轮询运行状态 |
 | **通过 aria2 下载** | 不经过 GitHub：把 urls 里的地址逐条通过 JSON-RPC 添加到本地/局域网 aria2，直接下载 |
+| **发送到 MediaGo** | 不经过 GitHub：把地址提交给 [MediaGo](https://github.com/mediago-dev/mediago) 的 HTTP 下载服务，由它下载/合并 |
 
 aria2 tab 提供：RPC 地址/密钥填写（按 host 记忆）、「测试连接」（回显 aria2 版本并提示是否支持 HLS）、UA/Referer 请求头、all-proxy 代理、多连接（-x 16 -s 16）、保存目录、覆盖开关，以及任务进度轮询（状态/百分比/速度/文件名）。
 
-右侧只显示 aria2 真正生效的字段（urls / save_name / headers / overwrite / 多连接 / 代理 / 下载路径）；select_video、mux_format、thread_count、extra_args 与 HF 上传属于 GitHub Action 流程，不在此显示。两个 tab 的 urls / save_name / headers 会自动同步（打开弹框或点「载入页面视频」时一起更新）。
-
 > **注意**：m3u8（HLS）需要支持 HLS 的 aria2 版本（如 `aria2-next`），否则只会下载到播放列表文件本身。「测试连接」会检测并提示。
+
+##### MediaGo tab：先选画质，再发送
+
+MediaGo 的下载接口（`POST /api/downloads`）只接受 `type / url / name / folder / headers`，**没有选流参数**——选画质只能由前端做完再下发。所以脚本对 m3u8 会做二次交互：
+
+1. 发送前先拉取该链接的播放列表（跨源用 `GM_xmlhttpRequest`，已带 `@connect *` 授权）；
+2. 解析所有 `#EXT-X-STREAM-INF`，按分辨率/帧率/码率/编码列出画质列表，默认选中最高画质；
+3. 用户确认后，把**选中的清晰度 URL** 作为任务 `url` 提交给 MediaGo（`type` 按链接自动判定：`.m3u8` → `m3u8`，bilibili → `bilibili`，其余 → `direct`）；
+4. 多链接时逐条询问，形成队列（按钮显示「还剩 N 条待选」）；关弹框或切走 tab 会放弃未确认的选择，**不会发送任何任务**。
+
+非 m3u8、媒体播放列表（单一画质）时不弹选择，按原链接直接发送。
+
+**播放列表拉取/解析失败时不会静默发送**（否则 MediaGo 会用它自己的默认选流下载，画质不受你控制）。此时会弹对话框说明原因（如 Cloudflare 拦截、链接过期、返回的是网页而非播放列表），并提供四个选项：
+
+| 选项 | 行为 |
+|---|---|
+| 仍然发送这条 | 按原链接发送（MediaGo 用默认选流，画质不受你控制） |
+| 跳过这条 | 这条不发送，继续处理后续链接 |
+| 全部仍然发送（不再询问） | 本条及后续解析失败的都按原链接发送 |
+| 取消发送 | 整个流程终止，不发送任何任务 |
+
+发送完成后的状态栏会明确标注有几条是"解析失败、按原链接发送"的。
+
+MediaGo tab 还提供：服务地址/API Key 填写（按 host 记忆，Docker 启用认证时填设置页里的 Key，以 `Authorization: Bearer` 发送）、「测试连接」（用任务列表接口探测连通性与认证）、保存子目录、删除分段（`deleteSegments`）、任务进度轮询（状态/产物文件名）与单个任务「停止」。
+
+地址默认 `http://127.0.0.1:9900`；桌面端是 `39719`，Docker 按 `-p` 映射填（如 `http://10.0.0.223:9900`）。
+
+右侧各 tab 只显示自己真正生效的字段（aria2：urls / save_name / headers / overwrite / 多连接 / 代理 / 下载路径；MediaGo：urls / save_name / headers / folder / 删除分段）；select_video、mux_format、thread_count、extra_args 与 HF 上传属于 GitHub Action 流程，不在这两个 tab 显示。三个 tab 的 urls / save_name / headers 会自动同步（打开弹框或点「载入页面视频」时一起更新）。
 
 ### 注意事项
 
@@ -378,7 +407,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 
 ### 油猴脚本一键触发（可选）
 
-嫌每次去 Actions 页面点 Run workflow 麻烦，可安装油猴脚本 `tools/ytdlp/ytdlp-dispatch.user.js`：在仓库页面或 jable.tv / pornhub / missav.ws 视频页右下角显示悬浮按钮，点击弹框填参数，一键触发本 workflow，并轮询展示运行状态。
+嫌每次去 Actions 页面点 Run workflow 麻烦，可安装油猴脚本 `tools/ytdlp/ytdlp-dispatch.user.js`：在仓库页面或 jable.tv / pornhub / missav（.ai/.ws/.com/.live/missav123.com 等镜像域） 视频页右下角显示悬浮按钮，点击弹框填参数，一键触发本 workflow，并轮询展示运行状态。
 
 **触发目标三者全部手填、不写死**：弹框内「**owner · 用户名」「repo · 仓库名」「workflow · 触发哪个 Action**」都由用户手动输入（均可直接粘贴 `https://github.com/<用户名>/<仓库名>` 或 `.github/workflows/xxx.yml` 完整路径，会自动拆解归一化；留空才兜底用脚本里的 CONFIG 默认值）。dispatch 触发、Token 验证、页面快照拉取、运行状态轮询、最近运行列表、弹框标题和「Actions 页面」链接全部跟随这三个填写值；手填值本地记忆，下次自动带出。也就是说这个脚本可以触发**任意仓库**的 workflow，不只是本仓库。
 
@@ -392,7 +421,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 
 **功能**：
 
-- 悬浮按钮可拖动、位置记忆；仅在 `gh-toolbox` 仓库页面与 jable.tv / pornhub / missav.ws 视频页显示（GitHub Turbo 导航自动感知，离开这几类页面自动隐藏）——按钮出现位置由 `@match` 决定，触发目标则由手填的三栏决定，两者独立。
+- 悬浮按钮可拖动、位置记忆；仅在 `gh-toolbox` 仓库页面与 jable.tv / pornhub / missav（.ai/.ws/.com/.live/missav123.com 等镜像域） 视频页显示（GitHub Turbo 导航自动感知，离开这几类页面自动隐藏）——按钮出现位置由 `@match` 决定，触发目标则由手填的三栏决定，两者独立。
 - 弹框表单与 workflow 的 12 个 inputs 一一对应（每项带中文说明），填写值**按当前 host 隔离保存**（github.com / jable.tv / cn.pornhub.com 各记各的），下次自动带出；「重置参数」一键还原默认值（同时清除自动带入的视频信息）。**例外：urls（下载链接）与 rename（标题）不保存**——每次打开弹框都会重新提取，不会把上一个视频的链接带进下一次；其余（format/overwrite/transcode/hf_repo/headers/Token/owner/repo/workflow/ref 等）全部保存。
 - **headers 默认带上 UA + Referer**：headers 栏为空时自动填入 `{"User-Agent":"<Chrome UA>","Referer":"<站点 origin>"}`（视频站打开时用当前站点，仓库页在快照提取成功后补目标站点）；仅当栏为空或仍是自动生成的默认头时才刷新，手填的自定义请求头（如带 Cookie）不会被覆盖。
 - 触发分支 `ref` 可改（默认 `main`；在 `/tree/<分支>` 或 `/blob/<分支>` 页面打开会自动带出该分支）；触发目标 workflow 手填（见上）。
@@ -406,7 +435,7 @@ base64 -w0 cookies.txt   # 生成单行 base64
 2. 准备 GitHub Token：
    - 经典 PAT：勾选 `repo` scope；
    - 细粒度 PAT：`Actions: read+write` + `Contents: read` + `Metadata: read`。
-3. 打开 gh-toolbox 仓库任意页面（`https://github.com/<owner>/gh-toolbox`）或任意 jable.tv / pornhub / missav.ws 视频页，点右下角 **▶ yt-dlp** 悬浮按钮，弹框内粘贴 Token →「保存并验证」→（视频信息已自动带好）按需改参数 →「触发 Action」。
+3. 打开 gh-toolbox 仓库任意页面（`https://github.com/<owner>/gh-toolbox`）或任意 jable.tv / pornhub / missav（.ai/.ws/.com/.live/missav123.com 等镜像域） 视频页，点右下角 **▶ yt-dlp** 悬浮按钮，弹框内粘贴 Token →「保存并验证」→（视频信息已自动带好）按需改参数 →「触发 Action」。
 
 **注意**：
 

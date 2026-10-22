@@ -1,10 +1,16 @@
 // ==UserScript==
 // @name         gh-toolbox m3u8 一键触发器
 // @namespace    https://gh-toolbox/m3u8
-// @version      1.1.0
-// @description  在 gh-toolbox 仓库页面或 jable.tv / pornhub / missav 视频页显示悬浮按钮，弹框内分「GitHub Action 触发」与「通过 aria2 下载」两个 tab：一键触发「N_m3u8DL-RE 下载器」workflow_dispatch，或把视频直链直接添加到本地/局域网 aria2；自动提取视频直链与标题，并轮询展示运行/下载状态。
+// @version      1.2.0
+// @description  在 gh-toolbox 仓库页面或 jable.tv / pornhub / missav（.ai/.ws/.com 等镜像域）视频页显示悬浮按钮，弹框内分「GitHub Action 触发」「通过 aria2 下载」「发送到 MediaGo」三个 tab：一键触发「N_m3u8DL-RE 下载器」workflow_dispatch，或把视频直链直接添加到本地/局域网 aria2 / MediaGo（m3u8 会先弹画质列表，确认后才发送）；自动提取视频直链与标题，并轮询展示运行/下载状态。
 // @match        https://github.com/*/gh-toolbox*
+// @match        https://*.missav.ai/*
 // @match        https://*.missav.ws/*
+// @match        https://*.missav.com/*
+// @match        https://*.missav.live/*
+// @match        https://*.missav123.com/*
+// @include      https://*.missav.*/*
+// @include      https://missav.*/*
 // @match        https://jable.tv/videos/*
 // @match        https://*.pornhub.com/view_video.php*
 // @grant        GM_setValue
@@ -28,7 +34,7 @@
  * 功能：
  *   1. 在 gh-toolbox 仓库页面、jable.tv / pornhub / missav 视频页右下角显示
  *      悬浮按钮（可拖动）；
- *   2. 点击按钮打开弹框，弹框分两个 tab：
+ *   2. 点击按钮打开弹框，弹框分三个 tab：
  *        - 「GitHub Action 触发」：填写 workflow_dispatch 参数（与
  *          .github/workflows/m3u8.yml 的 inputs 一一对应，见下方 INPUTS 定义）；
  *        - 「通过 aria2 下载」：不经过 GitHub，直接把 urls 里的地址逐条加到
@@ -37,6 +43,13 @@
  *          参数区只保留 aria2 生效的字段（urls / save_name / headers /
  *          overwrite / 多连接 / 代理 / 下载路径）；select_video、mux_format、
  *          thread_count、extra_args 与 HF 上传等 workflow 专用项不在右侧显示。
+ *        - 「发送到 MediaGo」：把地址提交给 MediaGo（mediago-dev/mediago）的
+ *          HTTP 下载服务（桌面端 39719，Docker 部署通常是 9900），支持
+ *          API Key 认证、保存子目录、删除分段与任务进度轮询。
+ *          m3u8 会先做二次交互：拉取主播放列表解析出所有 #EXT-X-STREAM-INF
+ *          画质（分辨率/帧率/码率/编码），弹出列表让用户选择，确认后才把选中
+ *          的清晰度 URL 作为任务提交——MediaGo 的 /api/downloads 本身没有
+ *          选流参数，选流只能由前端完成后下发。多链接时逐条询问，形成队列。
  *   3. 打开弹框时自动提取当前视频的直链与标题，写入参数（提取值不持久化，每次
  *      打开都重新提取）：
  *        - 视频站页面（jable.tv / pornhub / missav）：从实时页面提取；
@@ -71,6 +84,7 @@
     defaultBranch: 'main',
     fabLabel: '⬇ m3u8',
     storagePrefix: 'm3u8_trigger_',
+    rootId: 'm3u8-t-root',          // 注入节点的 id（提取页面前要先摘除，避免把自身 placeholder 当候选）
     // 仓库内页面快照目录（GitHub 仓库页打开弹框时自动拉取解析）
     pageDirs: ['tools/m3u8/html'],
     pageFiles: [
@@ -85,14 +99,23 @@
     aria2Secret: '',
     aria2PollMs: 600000,              // aria2 任务进度轮询最长时长（10 分钟）
     aria2PollInterval: 3000,
+    // MediaGo 下载（弹框第三个 tab）：服务地址与 API Key 也可在面板内修改并保存；
+    // 这里只是首次使用的默认值。桌面端 39719，Docker 部署通常是 9900/8899
+    mediagoBase: 'http://127.0.0.1:9900',
+    mediagoKey: '',
+    mediagoPollMs: 600000,            // MediaGo 任务进度轮询最长时长（10 分钟）
+    mediagoPollInterval: 3000,
     // 支持的视频站页面（@match 已限定路径，这里兜底再判一次主机名/路径）
     videoSites: [
       { host: /(^|\.)jable\.tv$/, path: /^\/videos\// },
       { host: /(^|\.)pornhub\.com$/, path: /^\/view_video\.php/ },
-      // missav：/jur-881、/cn/jur-881、/dm39/jur-881 等番号详情页。
-      // 判据：路径最后一段是番号（字母+数字+连字符，必含数字），列表页如
-      // /actress/xxx、/genres/xxx、/ 均不匹配
-      { host: /(^|\.)missav\.ws$/, path: /^\/(?:[\w-]+\/)?[\w-]*\d[\w-]*\/?$/i },
+      // missav 域名经常换（.ws/.com 被封后主站迁到 .ai，另有 .live、
+      // missav123.com 等镜像）。这里按「missav.<任意 TLD>」通用匹配，
+      // 避免与 @include 的覆盖范围不一致——否则脚本被注入后又会因为
+      // 主机名不在白名单里把按钮隐藏掉。
+      // 路径也不做番号启发式判断：站点 URL 结构一变按钮就会整块消失，
+      // 而列表页误显示只会提示「未找到视频直链」，不会填错链接。
+      { host: /(^|\.)(?:missav|missav123)\.[a-z]{2,}$/i, path: /^\/.*$/ },
     ],
   };
 
@@ -201,6 +224,44 @@
     return spec;
   }));
 
+  // MediaGo tab 的表单：只保留 MediaGo 真正生效的字段（urls / save_name /
+  // headers）＋连接与目录配置；select_video / mux_format / thread_count /
+  // extra_args / HF 上传都是 GitHub Action 专用，不在该 tab 显示。
+  // 画质不放在表单里——发送前按 m3u8 主播放列表逐条交互选流，选中的 variant
+  // URL 才会作为任务 url 提交（MediaGo 的 /api/downloads 没有选流参数）。
+  const MEDIAGO_INPUT_ORDER = ['urls', 'save_name', 'headers', 'folder', 'del_segments'];
+  const MEDIAGO_INPUTS = [
+    {
+      key: 'base', label: 'MediaGo 地址', type: 'text', default: CONFIG.mediagoBase, mediago: true,
+      hint: '桌面端 http://localhost:39719；Docker 部署填 http://服务器:9900（按 -p 端口映射调整）',
+      placeholder: 'http://10.0.0.223:9900',
+    },
+    {
+      key: 'key', label: 'MediaGo API Key', type: 'password', default: CONFIG.mediagoKey, mediago: true,
+      hint: 'Docker 启用认证时，在 MediaGo 设置页获取；以 Authorization: Bearer 发送。桌面端默认无需认证',
+      placeholder: '留空 = 无认证',
+    },
+  ].concat(MEDIAGO_INPUT_ORDER.map((key) => {
+    if (key === 'folder') {
+      return {
+        key: 'folder', label: 'folder · 保存子目录', type: 'text', default: '', mediago: true,
+        hint: 'MediaGo 内的子目录（相对路径），留空 = MediaGo 配置里的默认目录',
+        placeholder: 'videos',
+      };
+    }
+    if (key === 'del_segments') {
+      return {
+        key: 'del_segments', label: 'del_segments · 删除分段文件', type: 'checkbox', default: true, mediago: true,
+        hint: 'm3u8 下载完成、合并后删除 .ts 分段（对应启动接口的 deleteSegments）',
+      };
+    }
+    const src = INPUTS.find((s) => s.key === key);
+    const spec = Object.assign({}, src, { mediago: true });
+    if (key === 'save_name') spec.hint = '任务名称，会作为保存文件名；视频页打开时自动填入页面标题（可改）';
+    if (key === 'headers') spec.hint = '默认已带 UA + Referer（按站点自动生成）；作为多行 HTTP 头发送；单行 JSON 或每行 Name: Value';
+    return spec;
+  }));
+
   const REPO_PREFIX = CONFIG.owner ? `https://github.com/${CONFIG.owner}/${CONFIG.repo}` : '';
   const API_BASE = 'https://api.github.com';
   const POLL_FIND_RUN_MS = 60000;
@@ -246,7 +307,7 @@
     token: 'token', ref: 'ref', form: (k) => 'form_' + k, fabPos: 'fab_pos',
     snapCache: 'snap_cache',
     owner: 'owner', repo: 'repo', workflow: 'workflow',
-    tab: 'tab',                      // 上次打开的 tab（github / aria2）
+    tab: 'tab',                      // 上次打开的 tab（github / aria2 / mediago）
   };
 
   // urls（下载链接）与 save_name（视频标题自动带入）不持久化：每次打开弹框重新提取
@@ -376,31 +437,67 @@
       try {
         const payload = unescapeJsString(m[1]);
         const a = parseInt(m[2], 10) || 0;
-        const c = parseInt(m[3], 10) || 0;
+        let c = parseInt(m[3], 10) || 0;
         const dict = unescapeJsString(m[4]).split('|');
-        if (!c || !dict.length) continue;
-        // 还原时按 token 长度从长到短替换，避免短 token 抢先替换破坏长 token
-        const keys = [];
-        for (let i = 0; i < c; i++) {
-          const k = i.toString(36);
-          if (dict[i] && dict[i] !== k) keys.push([k, dict[i]]);
-        }
-        keys.sort((x, y) => y[0].length - x[0].length);
+        if (!a || !c || !dict.length) continue;
+        // 严格复刻 p.a.c.k.e.d 的解码器：
+        //   d(cc) = cc<a ? '' : d(floor(cc/a)) + (cc%a>35 ? fromCharCode(cc%a+29) : (cc%a).toString(36))
+        //   while(c--) p = p.replace(/\bd(c)\b/g, dict[c])
+        // 关键点：1) key 由上面的 d() 生成，a≠36 时和 toString(36) 不同；
+        //         2) 必须从高位到低位替换，否则短 token 会先破坏长 token 的结果。
+        const d = (cc) => (cc < a ? '' : d(Math.floor(cc / a))) +
+          ((cc = cc % a) > 35 ? String.fromCharCode(cc + 29) : cc.toString(36));
         let src = payload;
-        keys.forEach(([k, v]) => {
-          src = src.replace(new RegExp('\\b' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g'), v);
-        });
+        while (c--) {
+          const v = dict[c];
+          if (!v) continue;
+          src = src.replace(new RegExp('\\b' + d(c) + '\\b', 'g'), v);
+        }
         if (src !== payload) out.push(src);
       } catch (e) { /* 解不开就跳过 */ }
     }
     return out;
   }
 
+  // 从候选直链里挑一条提交。优先级（类型优先于画质，因为播放列表/分片才是可下载源）：
+  //   1. m3u8 主播放列表（master playlist）：文件名 playlist / master / index /
+  //      manifest，或路径里没有任何画质标记——它含全部画质，交给前端/MediaGo 选流
+  //   2. 带分辨率标记的 m3u8（1080p/720p…）：取最高的
+  //   3. 其他 m3u8
+  //   4. 只有在没有任何 m3u8 时，才退回 mp4/mpd 等直链（此时按分辨率取最高）
+  // 注意：不能用「无分辨率标记」来判断 master——preview.mp4 也没有标记，
+  // 那样会把预览片当成主播放列表选中。
   function pickBestVideo(urls) {
+    const list = (urls || []).filter(Boolean);
+    if (!list.length) return '';
+    const namedMaster = (u) => /(?:^|\/)(?:playlist|master|index|manifest)\.m3u8(?:[?#]|$)/i.test(u);
+    const isHls = (u) => /\.m3u8(?:[?#]|$)/i.test(u);
+    const hls = list.filter(isHls);
+    if (hls.length) {
+      const named = hls.filter(namedMaster);
+      if (named.length) return named[0];
+      // 解析 m3u8 的路径层级：越靠前（层级越浅）越可能是 master
+      const depth = (u) => {
+        try { return new URL(u).pathname.split('/').filter(Boolean).length; } catch (e) { return 99; }
+      };
+      const withRes = hls.filter((u) => /\d{3,4}[Pp](?:_|\b)/.test(u));
+      if (withRes.length) {
+        let best = '', bestScore = -1;
+        withRes.forEach((u) => {
+          const mm = u.match(/(\d{3,4})[Pp](?:_|\b)/);
+          const score = mm ? parseInt(mm[1], 10) : 0;
+          if (score > bestScore) { bestScore = score; best = u; }
+        });
+        return best;
+      }
+      // 都没有画质标记：取路径最浅的（master 通常比 /720p/video.m3u8 浅一层）
+      return hls.slice().sort((a, b) => depth(a) - depth(b))[0];
+    }
+    // 没有 m3u8：退到 mp4/mpd 等，按分辨率取最高
     let best = '', bestScore = -1;
-    (urls || []).forEach((u) => {
-      const m = u.match(/(\d{3,4})[Pp](?:_|\b)/);
-      const score = m ? parseInt(m[1], 10) : 0;
+    list.forEach((u) => {
+      const mm = u.match(/(\d{3,4})[Pp](?:_|\b)/);
+      const score = mm ? parseInt(mm[1], 10) : 0;
       if (score > bestScore) { bestScore = score; best = u; }
     });
     return best;
@@ -519,30 +616,51 @@
       const re4 = /(https?:\/\/[^\s'"<>()]+?\.(?:m3u8|mp4|mpd)(?:\?[^\s'"<>()]*)?)/gi;
       while ((mm = re4.exec(src)) !== null) packedUrls.push(mm[1]);
     });
-    if (!raws.length) packedUrls.forEach((u) => raws.push(u));
+    // 明文候选与 packed 解密候选**始终合并**，不能「明文非空就不用 packed」：
+    // missav 页面里常有 preview.mp4 这类明文干扰项，真正的播放列表只在 packed 里；
+    // 只要明文非空就跳过 packed，会直接拿错成 .preview.mp4。
+    const rawAll = raws.concat(packedUrls);
     const norm = [];
-    raws.forEach((r) => {
+    // 脚本自己的示例占位值（placeholder 里的 example.com 等）永远不是真实直链
+    const isPlaceholder = (u) => /^https?:\/\/(www\.)?example\.(com|org|net)(?=[/?#:]|$)/i.test(u);
+    // 预览片 / 缩略图 / 下载端点永远不是播放源。这里**硬过滤**，后面也绝不拿它们兜底，
+    // 否则过滤完候选为空时会兜回 preview.mp4，表现就是「链接变成了 .preview.mp4」。
+    const isPreview = (u) => /preview|screenshot|thumbvtt/i.test(u);
+    const isDownloadEp = (u) => /\/get_media\b|\/download\b/i.test(u);
+    rawAll.forEach((r) => {
       const u = decodeEntities(unescapeJsString(r)).trim();
       if (!u || norm.indexOf(u) !== -1) return;
       if (!/^https?:\/\//i.test(u)) return;
+      if (isPlaceholder(u) || isPreview(u) || isDownloadEp(u)) return;
       norm.push(u);
     });
-    // 前面几条正则可能只匹配到页面里的示例/占位值（如 missav 内联文档代码中的
-    // example.com），此时 packed 解密拿到的真实直链优先采用
-    const isPlaceholder = (u) => /^https?:\/\/(www\.)?example\.(com|org|net)\b/i.test(u);
-    if (norm.length && norm.every(isPlaceholder) && packedUrls.length) {
-      norm.length = 0;
-      packedUrls.forEach((u) => {
-        const v = decodeEntities(unescapeJsString(u)).trim();
-        if (v && norm.indexOf(v) === -1) norm.push(v);
-      });
-    }
-    const isDownloadEp = (u) => /\/get_media\b|\/download\b/i.test(u);
-    const isPreview = (u) => /preview|screenshot|thumbvtt/i.test(u);
-    const candidates = norm.filter((u) => !isDownloadEp(u) && !isPreview(u));
-    const primary = pickBestVideo(candidates.length ? candidates : norm);
+    // 过滤后没有任何可用直链 → 返回空，让发送按钮明确报「未检测到链接」，
+    // 绝不把 preview.mp4 之类的东西当视频直链填进 urls
+    const primary = pickBestVideo(norm);
     const videos = primary ? [{ title, url: primary }] : [];
     return { title, pageUrl, videos };
+  }
+
+  // 提取页面视频直链。注意：脚本自己注入的弹框/FAB 也在 document 里，其
+  // placeholder（如 https://example.com/video/index.m3u8）会被 outerHTML 带上，
+  // 导致把示例占位值当成候选直链。
+  //
+  // 这里只处理「序列化后的 HTML 字符串」，绝不把节点从 DOM 上摘下来：
+  // 拆卸/重插会触发站点自己的 MutationObserver，也可能丢失节点状态，
+  // 表现为悬浮按钮消失。按钮只读不碰。
+  function pageHtmlForExtract() {
+    let html = document.documentElement.outerHTML;
+    [CONFIG.rootId, 'm3u8-t-fab'].forEach((id) => {
+      const node = document.getElementById(id);
+      if (!node) return;
+      let outer = '';
+      try { outer = node.outerHTML || ''; } catch (e) { outer = ''; }
+      if (!outer) return;
+      // outerHTML 与 documentElement.outerHTML 由同一套序列化器产生，
+      // 正常情况下是逐字子串；找不到就跳过（占位值另有 example.com 过滤兜底）
+      if (html.indexOf(outer) !== -1) html = html.split(outer).join('');
+    });
+    return html;
   }
 
   function sanitizeFileName(name) {
@@ -576,7 +694,7 @@
   }
 
   async function autoFillFromPage() {
-    const roots = [formEl, ariaFormEl].filter(Boolean);
+    const roots = [formEl, ariaFormEl, mediagoFormEl].filter(Boolean);
     const urlNodes = roots.map((r) => r.querySelector('[data-key="urls"]')).filter(Boolean);
     if (!urlNodes.length) return;
 
@@ -588,10 +706,11 @@
       let parsed;
       let srcLabel = '当前页面';
       if (src === 'live') {
-        parsed = extractPageVideos(document.documentElement.outerHTML);
+        parsed = extractPageVideos(pageHtmlForExtract());
       } else {
         const cands = await listSnapshotCandidates();
         if (!cands.length) {
+          clearUrls();
           setAnyStatus('未发现页面快照：请把保存的网页 HTML 放到仓库 ' + CONFIG.pageDirs[0] +
             ' 目录并推送（目录列举需要网络可达 api.github.com）', 'err');
           return;
@@ -609,19 +728,21 @@
           tried.push(basename(p) + ' 无视频直链');
         }
         if (!parsed) {
+          clearUrls();
           setAnyStatus('所有快照均无法提取视频：' + tried.join('；') +
             '。请确认保存的是视频详情页（含播放器 script），且已提交推送', 'err');
           return;
         }
       }
       if (!parsed.videos.length) {
+        clearUrls();
         setAnyStatus(src === 'live'
           ? '当前页面未找到视频直链。请确认在视频详情页打开（jable.tv /videos/xxx、pornhub /view_video.php、missav /cn/xxx-123）'
           : '页面中未找到视频直链，请确认保存的是视频详情页（含播放器 script）', 'err');
         return;
       }
       const lines = parsed.videos.map((v) => v.url);
-      urlNodes.forEach((n) => { n.value = lines.join('\n'); }); // 两个 tab 都填，不持久化
+      urlNodes.forEach((n) => { n.value = lines.join('\n'); }); // 三个 tab 都填，不持久化
       // 标题自动写入输出文件名（产物名 = 标题.mp4/mkv/ts）；只写提取值，用户已手改的值不覆盖
       if (CONFIG.autoFillSaveName && parsed.title) {
         roots.forEach((r) => {
@@ -636,14 +757,31 @@
         if (headersNode && (!headersNode.value.trim() || isGeneratedHeaders(headersNode.value))) {
           const dh = defaultHeaders(parsed.pageUrl);
           headersNode.value = dh;
-          store.set(KEY.form((r === ariaFormEl ? 'aria2_' : '') + 'headers'), dh);
+          store.set(KEY.form(formPrefixOf(r) + 'headers'), dh);
         }
       });
       setAnyStatus('已载入 ' + parsed.videos.length + ' 个视频' + (parsed.title ? '：' + parsed.title : '') +
         '（来源：' + srcLabel + '）', 'ok');
     } catch (e) {
+      clearUrls();
       setAnyStatus('读取页面视频异常：' + e.message, 'err');
     }
+  }
+
+  // 表单根节点 → 存储前缀（三个 tab 各自隔离）
+  function formPrefixOf(root) {
+    if (root === ariaFormEl) return 'aria2_';
+    if (root === mediagoFormEl) return 'mediago_';
+    return '';
+  }
+
+  // 解析不到视频直链时：清空三个 tab 的 urls（不保留上一个视频的旧链接，
+  // 也不填错误链接），让发送按钮明确报「未检测到链接」而不是拿错链接去下载
+  function clearUrls() {
+    [formEl, ariaFormEl, mediagoFormEl].filter(Boolean).forEach((r) => {
+      const n = r.querySelector('[data-key="urls"]');
+      if (n) n.value = '';
+    });
   }
 
   function basename(p) {
@@ -685,6 +823,23 @@
 #m3u8-t-root[data-theme="dark"] .m3u8-t-tab{color:#8b949e}
 #m3u8-t-root[data-theme="dark"] .m3u8-t-tab:hover{color:#e6edf3}
 #m3u8-t-root[data-theme="dark"] .m3u8-t-tab.active{color:#e6edf3;border-bottom-color:#a371f7}
+/* m3u8 选流列表（MediaGo tab 的二次交互） */
+.m3u8-t-vars{list-style:none;margin:8px 0 0;padding:0;max-height:280px;overflow:auto;border:1px solid #d1d9e0;border-radius:8px}
+.m3u8-t-vars li{margin:0;padding:0;border-bottom:1px solid #d1d9e0}
+.m3u8-t-vars li:last-child{border-bottom:none}
+.m3u8-t-vars label{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;cursor:pointer}
+.m3u8-t-vars label:hover{background:#f6f8fa}
+#m3u8-t-root[data-theme="dark"] .m3u8-t-vars{border-color:#30363d}
+#m3u8-t-root[data-theme="dark"] .m3u8-t-vars li{border-color:#30363d}
+#m3u8-t-root[data-theme="dark"] .m3u8-t-vars label:hover{background:#161b22}
+.m3u8-t-var-main{min-width:0;flex:1}
+.m3u8-t-var-title{font-size:13px;font-weight:600;word-break:break-all}
+.m3u8-t-var-meta{font-size:12px;color:#57606a;margin-top:2px;word-break:break-all}
+#m3u8-t-root[data-theme="dark"] .m3u8-t-var-meta{color:#8b949e}
+.m3u8-t-var-badge{display:inline-block;margin-left:6px;padding:0 6px;border-radius:999px;background:#dafbe1;color:#116329;font-size:11px;font-weight:600;line-height:18px;vertical-align:1px}
+#m3u8-t-root[data-theme="dark"] .m3u8-t-var-badge{background:rgba(46,160,67,.2);color:#3fb950}
+.m3u8-t-var-sub{font-size:11px;font-weight:400;color:#57606a;margin-left:6px}
+#m3u8-t-root[data-theme="dark"] .m3u8-t-var-sub{color:#8b949e}
 .m3u8-t-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid #d1d9e0;position:sticky;top:0;background:inherit;z-index:1}
 #m3u8-t-root[data-theme="dark"] .m3u8-t-head{border-color:#30363d}
 .m3u8-t-title{font-size:16px;font-weight:600;margin:0}
@@ -838,8 +993,12 @@
   // ---------------------------------------------------------------------------
   let rootEl, fabEl, maskEl, panelEl, formEl, refInput, statusEl, runStatusEl, runsEl, triggerBtn, tokenInput, pageSrcSelect, pageSrcRow,
     workflowInput, ownerInput, repoInput, titleTextEl, titleSmallEl, wfLink,
-    githubPaneEl, ariaPaneEl, tabGithubEl, tabAriaEl, ariaFormEl, ariaStatusEl, ariaTasksEl, ariaTriggerBtn, ariaTestBtn;
+    githubPaneEl, ariaPaneEl, tabGithubEl, tabAriaEl, ariaFormEl, ariaStatusEl, ariaTasksEl, ariaTriggerBtn, ariaTestBtn,
+    mediagoPaneEl, tabMediaGoEl, mediagoFormEl, mediagoStatusEl, mediagoTasksEl, mediagoTriggerBtn, mediagoTestBtn, mediagoPickEl, mediagoPickListEl, mediagoPickConfirmBtn;
   let ariaPollToken = 0;
+  let mediagoPollToken = 0;
+  // MediaGo 选流交互的会话态：一次「发送」流程内多链接共用的待选队列
+  let mediagoPickQueue = [];
 
   function el(tag, cls, text) {
     const n = document.createElement(tag);
@@ -870,6 +1029,9 @@
       window.visualViewport.addEventListener('resize', clampFabPos);
       window.visualViewport.addEventListener('scroll', clampFabPos);
     }
+    // 轻量看门狗：页面脚本/第三方清理有时会把注入节点从 body 里摘掉，
+    // 每秒确认一次按钮仍在 DOM 且显隐正确（开销可忽略）。
+    setInterval(ensureFabInDom, 1000);
   }
 
   // 视口尺寸：优先 visualViewport（移动端 pinch-zoom / 软键盘时 window 尺寸不准），回退 window
@@ -883,6 +1045,16 @@
   // 以「距右/下边缘的偏移」定位按钮。
   // 这样窗口缩放、浏览器缩放、分屏拖动时按钮跟着边缘走，天然不会跑出屏幕；
   // 只有窗口缩到放不下按钮时，才把偏移夹到最小留白。
+  // 兜底：确保悬浮按钮一定在 DOM 里且可见。
+  // 任何第三方脚本/页面自身的清理逻辑都不该让按钮消失；这里用 contains 判断，
+  // 掉出 DOM 就重新挂回 body，再按当前页面是否允许决定显隐。
+  function ensureFabInDom() {
+    if (!fabEl) return;
+    if (!document.body.contains(fabEl)) document.body.appendChild(fabEl);
+    fabEl.style.display = pageAllowed() ? '' : 'none';
+    clampFabPos();
+  }
+
   function applyFabEdge(right, bottom) {
     fabEl.style.left = 'auto';
     fabEl.style.top = 'auto';
@@ -1001,7 +1173,7 @@
 
     const body = el('div', 'm3u8-t-body');
 
-    // --- Tab 切换：GitHub Action / aria2 本地下载 ---
+    // --- Tab 切换：GitHub Action / aria2 本地下载 / MediaGo ---
     const tabBar = el('div', 'm3u8-t-tabs');
     tabGithubEl = el('button', 'm3u8-t-tab active', 'GitHub Action 触发');
     tabGithubEl.type = 'button';
@@ -1009,7 +1181,10 @@
     tabAriaEl = el('button', 'm3u8-t-tab', '通过 aria2 下载');
     tabAriaEl.type = 'button';
     tabAriaEl.addEventListener('click', () => setActiveTab('aria2'));
-    tabBar.append(tabGithubEl, tabAriaEl);
+    tabMediaGoEl = el('button', 'm3u8-t-tab', '发送到 MediaGo');
+    tabMediaGoEl.type = 'button';
+    tabMediaGoEl.addEventListener('click', () => setActiveTab('mediago'));
+    tabBar.append(tabGithubEl, tabAriaEl, tabMediaGoEl);
     body.appendChild(tabBar);
 
     githubPaneEl = el('div', 'm3u8-t-pane');
@@ -1017,6 +1192,9 @@
     ariaPaneEl = el('div', 'm3u8-t-pane');
     ariaPaneEl.dataset.pane = 'aria2';
     ariaPaneEl.style.display = 'none';
+    mediagoPaneEl = el('div', 'm3u8-t-pane');
+    mediagoPaneEl.dataset.pane = 'mediago';
+    mediagoPaneEl.style.display = 'none';
 
     // --- Token 区 ---
     const tokenSec = el('div', 'm3u8-t-section');
@@ -1181,7 +1359,10 @@
     // --- aria2 tab ---
     buildAriaPane(ariaPaneEl);
 
-    body.append(githubPaneEl, ariaPaneEl);
+    // --- MediaGo tab ---
+    buildMediaGoPane(mediagoPaneEl);
+
+    body.append(githubPaneEl, ariaPaneEl, mediagoPaneEl);
     panelEl.append(head, body);
     maskEl.appendChild(panelEl);
     maskEl.addEventListener('click', (e) => { if (e.target === maskEl) closeModal(); });
@@ -1190,8 +1371,8 @@
 
   function buildRow(spec) {
     const row = el('div', 'm3u8-t-row');
-    const cid = 'm3u8-t-' + (spec.aria ? 'aria2-' : '') + spec.key;
-    const storeKey = (spec.aria ? 'aria2_' : '') + spec.key;
+    const cid = 'm3u8-t-' + (spec.aria ? 'aria2-' : (spec.mediago ? 'mediago-' : '')) + spec.key;
+    const storeKey = (spec.aria ? 'aria2_' : (spec.mediago ? 'mediago_' : '')) + spec.key;
     let input;
     if (spec.type === 'checkbox') {
       row.classList.add('m3u8-t-row-check');
@@ -1312,16 +1493,608 @@
     pane.appendChild(taskSec);
   }
 
+  // ---------------------------------------------------------------------------
+  // MediaGo tab：本地/局域网 MediaGo 服务（Docker 部署通常 9900 端口）
+  // ---------------------------------------------------------------------------
+  function buildMediaGoPane(pane) {
+    mediagoFormEl = pane; // 作为查询根（base/key/urls... 的 data-key 在各 section 中）
+
+    // 连接
+    const connSec = el('div', 'm3u8-t-section');
+    connSec.appendChild(el('h3', null, 'MediaGo 连接'));
+    MEDIAGO_INPUTS.filter((s) => s.key === 'base' || s.key === 'key')
+      .forEach((s) => connSec.appendChild(buildRow(s)));
+    const connActions = el('div', 'm3u8-t-actions');
+    mediagoTestBtn = el('button', 'm3u8-t-btn', '测试连接');
+    mediagoTestBtn.type = 'button';
+    mediagoTestBtn.addEventListener('click', onMediaGoTest);
+    connActions.appendChild(mediagoTestBtn);
+    connSec.appendChild(connActions);
+    pane.appendChild(connSec);
+
+    // 下载参数
+    const paramSec = el('div', 'm3u8-t-section');
+    paramSec.appendChild(el('h3', null, '下载参数'));
+    paramSec.appendChild(el('div', 'm3u8-t-hint',
+      '打开弹框会自动提取视频直链（urls / save_name 不保存）。发送前若链接是 m3u8 主播放列表（含多条视频流），会先弹出画质列表供选择，确认后才提交给 MediaGo；MediaGo 接口本身不接收选流参数，选中的清晰度会直接作为任务 URL。'));
+    MEDIAGO_INPUTS.filter((s) => s.key !== 'base' && s.key !== 'key')
+      .forEach((s) => paramSec.appendChild(buildRow(s)));
+    pane.appendChild(paramSec);
+
+    // 画质选择区（默认隐藏，m3u8 多流时出现）
+    const pickSec = el('div', 'm3u8-t-section');
+    pickSec.style.display = 'none';
+    mediagoPickEl = pickSec;
+    mediagoPickEl.appendChild(el('h3', null, '选择画质'));
+    mediagoPickListEl = el('ul', 'm3u8-t-vars');
+    mediagoPickEl.appendChild(mediagoPickListEl);
+    const pickActions = el('div', 'm3u8-t-actions');
+    mediagoPickConfirmBtn = el('button', 'm3u8-t-btn m3u8-t-btn-primary', '确认并发送');
+    mediagoPickConfirmBtn.type = 'button';
+    mediagoPickConfirmBtn.disabled = true;
+    pickActions.appendChild(mediagoPickConfirmBtn);
+    mediagoPickEl.appendChild(pickActions);
+    pane.appendChild(pickSec);
+
+    // 操作
+    const actionSec = el('div', 'm3u8-t-section');
+    const actions = el('div', 'm3u8-t-actions');
+    mediagoTriggerBtn = el('button', 'm3u8-t-btn m3u8-t-btn-primary', '发送到 MediaGo');
+    mediagoTriggerBtn.type = 'button';
+    mediagoTriggerBtn.addEventListener('click', onMediaGoDownload);
+    const mgResetBtn = el('button', 'm3u8-t-btn', '重置参数');
+    mgResetBtn.type = 'button';
+    mgResetBtn.addEventListener('click', resetMediaGoForm);
+    const mgLoadBtn = el('button', 'm3u8-t-btn', '载入页面视频');
+    mgLoadBtn.type = 'button';
+    mgLoadBtn.title = '重新从当前页面/快照提取视频直链与标题（同时更新所有 tab）';
+    mgLoadBtn.addEventListener('click', () => autoFillFromPage());
+    actions.append(mediagoTriggerBtn, mgResetBtn, mgLoadBtn);
+    actionSec.appendChild(actions);
+    mediagoStatusEl = el('div', 'm3u8-t-status');
+    actionSec.appendChild(mediagoStatusEl);
+    pane.appendChild(actionSec);
+
+    // 任务列表
+    const taskSec = el('div', 'm3u8-t-section');
+    taskSec.appendChild(el('h3', null, 'MediaGo 任务'));
+    mediagoTasksEl = el('ul', 'm3u8-t-runs');
+    taskSec.appendChild(mediagoTasksEl);
+    pane.appendChild(taskSec);
+  }
+
+  function mediagoSettings() {
+    const val = (key, dflt) => {
+      const n = mediagoFormEl && mediagoFormEl.querySelector('[data-key="' + key + '"]');
+      return (n && n.value.trim()) || dflt;
+    };
+    let base = val('base', CONFIG.mediagoBase).replace(/\/+$/, '');
+    if (!/^https?:\/\//i.test(base)) base = 'http://' + base;
+    return { base: base, key: val('key', CONFIG.mediagoKey) };
+  }
+
+  // MediaGo HTTP API：统一 JSON 包裹 {success,code,message,data}；
+  // GM_xmlhttpRequest 跨源（不受页面 CORS 限制），失败回退 fetch
+  function mediagoApi(method, path, body) {
+    return new Promise((resolve, reject) => {
+      const { base, key } = mediagoSettings();
+      const url = base + path;
+      const headers = { Accept: 'application/json' };
+      if (body !== undefined) headers['Content-Type'] = 'application/json';
+      if (key) headers.Authorization = 'Bearer ' + key;
+      const payload = body === undefined ? undefined : JSON.stringify(body);
+      const handle = (status, text) => {
+        let data;
+        try { data = JSON.parse(text || '{}'); }
+        catch (e) {
+          reject(new Error('MediaGo 返回非 JSON（HTTP ' + status + '）：' + String(text || '').slice(0, 120)));
+          return;
+        }
+        // 业务错误码：0 = 成功；其余按 message 报错
+        if (data && data.success === false) {
+          reject(new Error((data.message || 'MediaGo 返回错误') + (data.code ? '（code ' + data.code + '）' : '')));
+          return;
+        }
+        if (status >= 400) {
+          reject(new Error('HTTP ' + status + (data && data.message ? '：' + data.message : '')));
+          return;
+        }
+        resolve(data && 'data' in data ? data.data : data);
+      };
+      if (typeof GM_xmlhttpRequest === 'function') {
+        GM_xmlhttpRequest({
+          method, url, headers, data: payload, timeout: 20000,
+          onload: (r) => handle(r.status, r.responseText),
+          onerror: () => reject(new Error('无法连接 MediaGo：' + url + '（服务未启动 / 地址端口不对 / 跨域被拦）')),
+          ontimeout: () => reject(new Error('MediaGo 请求超时：' + url)),
+        });
+      } else {
+        fetch(url, { method, headers, body: payload })
+          .then((r) => r.text().then((t) => handle(r.status, t)))
+          .catch((e) => reject(new Error('无法连接 MediaGo：' + url + '（' + e.message + '）')));
+      }
+    });
+  }
+
+  // 跨源拉取文本（解析 m3u8 播放列表用）：同样走 GM_xmlhttpRequest
+  function fetchText(url, headers) {
+    return new Promise((resolve, reject) => {
+      const h = { Accept: '*/*' };
+      (headers || []).forEach((line) => {
+        const i = line.indexOf(':');
+        if (i > 0) h[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+      });
+      if (typeof GM_xmlhttpRequest === 'function') {
+        GM_xmlhttpRequest({
+          method: 'GET', url, headers: h, timeout: 20000,
+          onload: (r) => (r.status >= 200 && r.status < 300)
+            ? resolve(r.responseText)
+            : reject(new Error('HTTP ' + r.status)),
+          onerror: () => reject(new Error('无法访问 ' + url)),
+          ontimeout: () => reject(new Error('访问超时：' + url)),
+        });
+      } else {
+        fetch(url, { headers: h })
+          .then((r) => (r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status))))
+          .then(resolve)
+          .catch((e) => reject(new Error('无法访问 ' + url + '（' + e.message + '）')));
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // m3u8 主播放列表解析：提取 EXT-X-STREAM-INF 画质列表（MediaGo 二次交互）
+  // ---------------------------------------------------------------------------
+  function parseM3u8Variants(text, baseUrl) {
+    const lines = String(text || '').split(/\r?\n/);
+    if (!lines.length || !/^\s*#EXTM3U/.test(lines[0])) {
+      throw new Error('不是有效的 m3u8 播放列表（缺少 #EXTM3U 头）');
+    }
+    const out = [];
+    let cur = null;
+    lines.forEach((raw) => {
+      const line = raw.trim();
+      if (!line) return;
+      if (line.indexOf('#EXT-X-STREAM-INF:') === 0) {
+        cur = { attrs: line.slice('#EXT-X-STREAM-INF:'.length), url: '' };
+        return;
+      }
+      if (cur && line.charAt(0) !== '#') {
+        cur.url = line;
+        out.push(cur);
+        cur = null;
+      }
+    });
+    // 无 STREAM-INF：本身就是媒体播放列表（单一画质），无需选择
+    if (!out.length) return [];
+    return out.map((v) => {
+      const attr = (name) => {
+        const m = v.attrs.match(new RegExp(name + '=("[^"]*"|[^,]*)'));
+        return m ? m[1].replace(/^"|"$/g, '') : '';
+      };
+      const res = attr('RESOLUTION');
+      const codecs = attr('CODECS');
+      let abs;
+      try { abs = new URL(v.url, baseUrl).href; }
+      catch (e) { abs = v.url; }
+      const m = res.match(/^(\d+)[xX](\d+)$/);
+      return {
+        url: abs,
+        resolution: res || '',
+        height: m ? parseInt(m[2], 10) : 0,
+        bandwidth: parseInt(attr('BANDWIDTH'), 10) || 0,
+        frameRate: parseFloat(attr('FRAME-RATE')) || 0,
+        codecs: codecs,
+        audio: attr('AUDIO'),
+        name: attr('NAME'),
+      };
+    }).sort((a, b) => (b.height - a.height) || (b.bandwidth - a.bandwidth));
+  }
+
+  function variantLabel(v, idx, total) {
+    const parts = [];
+    if (v.height) parts.push(v.height + 'p');
+    else if (v.resolution) parts.push(v.resolution);
+    if (v.frameRate && v.frameRate > 30) parts.push(Math.round(v.frameRate) + 'fps');
+    if (v.bandwidth) parts.push(Math.round(v.bandwidth / 1000) + ' kbps');
+    if (v.codecs) parts.push(v.codecs);
+    let label = parts.join(' · ') || ('流 ' + (idx + 1));
+    if (idx === 0 && total > 1) label += '（推荐 · 最高画质）';
+    if (v.audio) label += ' · 音轨 ' + v.audio;
+    return label;
+  }
+
+  // 单个链接的画质选择；非 m3u8 / 无多流 / 拉取失败 → 直接返回原 URL
+  // 单个链接的画质选择。返回：
+  //   { url }         —— 已确定要下载的地址（用户选中的流，或本身只有一种画质）
+  //   { skip, reason } —— 播放列表拉取/解析失败，需由调用方停下问用户（见 askMediaGoFallback）
+  //   null            —— 用户取消整个发送流程
+  // 注意：拉不到播放列表时绝不静默按原链接发送——MediaGo 会用它自己的默认
+  // 选流下载，那正是"没让我选就从默认地址下载"的原因。必须让用户明确决策。
+  async function resolveMediaGoUrl(url, headers) {
+    let text;
+    try {
+      text = await fetchText(url, headers);
+    } catch (e) {
+      return { skip: true, reason: e.message, url };
+    }
+    // 拉回来的可能是 Cloudflare / 站点错误页（HTML），不是播放列表
+    if (/^\s*<(!doctype|html)/i.test(text) || /Attention Required|Just a moment|cf-error|Access Denied/i.test(text)) {
+      return { skip: true, reason: '返回的是网页而非播放列表（Cloudflare 拦截或链接已过期）', url };
+    }
+    let variants;
+    try {
+      variants = parseM3u8Variants(text, url);
+    } catch (e) {
+      return { skip: true, reason: e.message, url };
+    }
+    if (variants.length <= 1) {
+      // 媒体播放列表（单一画质）或非 HLS：没有可选的分支，直接采用原链接
+      return { url };
+    }
+    const pick = await askMediaGoVariant(url, variants, headers);
+    return pick ? { url: pick.url } : null;
+  }
+
+  // 弹出色质列表等待用户确认；返回选中的 variant（用户取消返回 null）
+  function askMediaGoVariant(url, variants, headers) {
+    return new Promise((resolve) => {
+      mediagoPickQueue.push({ url, variants, headers, resolve });
+      renderMediaGoPick();
+    });
+  }
+
+  // 解析失败时的决策对话框（复用画质选择区的容器）：
+  //   'send'  —— 仍然发送原链接（MediaGo 会用它自己的默认选流下载）
+  //   'skip'  —— 跳过这条
+  //   'cancel'—— 取消整个发送流程
+  function askMediaGoFallback(url, reason, idx, total) {
+    return new Promise((resolve) => {
+      mediagoPickQueue.push({ fallback: true, url, reason, idx, total, resolve });
+      renderMediaGoPick();
+    });
+  }
+
+  function currentMediaGoPick() {
+    return mediagoPickQueue[0] || null;
+  }
+
+  function renderMediaGoPick() {
+    const item = currentMediaGoPick();
+    if (!item) {
+      mediagoPickEl.style.display = 'none';
+      mediagoPickListEl.innerHTML = '';
+      mediagoPickConfirmBtn.disabled = true;
+      return;
+    }
+    mediagoPickEl.style.display = '';
+    mediagoPickListEl.innerHTML = '';
+
+    if (item.fallback) {
+      // --- 解析失败：说明原因 + 三个选项 ---
+      mediagoPickEl.querySelector('h3').textContent = '画质解析失败（第 ' + item.idx + '/' + item.total + ' 条）';
+      const box = el('div');
+      box.style.cssText = 'font-size:13px;line-height:1.6';
+      box.appendChild(el('div', null, item.url));
+      box.appendChild(el('div', 'm3u8-t-hint', '原因：' + item.reason));
+      box.appendChild(el('div', 'm3u8-t-hint',
+        ' MediaGo 会用它自己的默认选流下载（不弹选择），画质不受你控制。'));
+      mediagoPickListEl.appendChild(el('li')).appendChild(box);
+      mediagoPickConfirmBtn.textContent = '仍然发送这条';
+    } else {
+      // --- 正常画质列表 ---
+      mediagoPickEl.querySelector('h3').textContent = '选择画质';
+      const total = item.variants.length;
+      item.variants.forEach((v, i) => {
+        const li = el('li');
+        const radio = el('input', 'm3u8-t-check');
+        radio.type = 'radio';
+        radio.name = 'm3u8-t-mg-pick';
+        radio.value = String(i);
+        radio.checked = i === 0;
+        const label = el('label');
+        const main = el('div', 'm3u8-t-var-main');
+        main.appendChild(el('div', 'm3u8-t-var-title', variantLabel(v, i, total)));
+        main.appendChild(el('div', 'm3u8-t-var-meta', v.url));
+        label.append(radio, main);
+        li.appendChild(label);
+        mediagoPickListEl.appendChild(li);
+      });
+      const rest = mediagoPickQueue.length - 1;
+      mediagoPickConfirmBtn.textContent = rest > 0 ? '确认并发送（还剩 ' + rest + ' 条待选）' : '确认并发送';
+    }
+    mediagoPickConfirmBtn.disabled = false;
+    attachMediaGoPickExtras(item);
+
+    const rest = mediagoPickQueue.length - 1;
+    setMediaGoStatus(item.fallback
+      ? '画质解析失败，请选择处理方式' + (rest > 0 ? '（队列中还有 ' + rest + ' 条待处理）' : '')
+      : '检测到 ' + item.variants.length + ' 种画质，请选择后确认' +
+        (rest > 0 ? '（队列中还有 ' + rest + ' 条链接待选）' : ''), 'info');
+  }
+
+  // 确认/跳过/取消按钮统一走这里：每次渲染重建，绝不叠加监听
+  function attachMediaGoPickExtras(item) {
+    const done = (answer) => {
+      mediagoPickQueue.shift();
+      renderMediaGoPick();
+      item.resolve(answer);
+    };
+    // 重建确认按钮（cloneNode 丢掉旧的 addEventListener 监听，避免一次点击触发多个 handler）
+    const old = mediagoPickConfirmBtn;
+    const fresh = old.cloneNode(false);
+    old.parentNode.replaceChild(fresh, old);
+    mediagoPickConfirmBtn = fresh;
+    mediagoPickConfirmBtn.type = 'button';
+    mediagoPickConfirmBtn.disabled = false;
+    mediagoPickConfirmBtn.textContent = item.fallback ? '仍然发送这条'
+      : (mediagoPickQueue.length - 1 > 0 ? '确认并发送（还剩 ' + (mediagoPickQueue.length - 1) + ' 条待选）' : '确认并发送');
+    mediagoPickConfirmBtn.addEventListener('click', () => {
+      if (item.fallback) { done('send'); return; }
+      const checked = mediagoPickListEl.querySelector('input[name="m3u8-t-mg-pick"]:checked');
+      const idx = checked ? parseInt(checked.value, 10) : 0;
+      done(item.variants[idx] || item.variants[0]);
+    });
+
+    // 附加操作区（同样重建）
+    const holder = el('li');
+    const extra = el('div', 'm3u8-t-actions');
+    extra.style.marginTop = '8px';
+    const skipBtn = el('button', 'm3u8-t-btn', '跳过这条');
+    skipBtn.type = 'button';
+    skipBtn.addEventListener('click', () => done('skip'));
+    const sendAllBtn = el('button', 'm3u8-t-btn', '全部仍然发送（不再询问）');
+    sendAllBtn.type = 'button';
+    sendAllBtn.title = '后续解析失败的链接都按原链接发送，不再逐个询问';
+    sendAllBtn.addEventListener('click', () => done('send-all'));
+    const cancelBtn = el('button', 'm3u8-t-btn m3u8-t-btn-danger', '取消发送');
+    cancelBtn.type = 'button';
+    cancelBtn.addEventListener('click', () => done('cancel'));
+    extra.append(skipBtn, sendAllBtn, cancelBtn);
+    holder.appendChild(extra);
+    mediagoPickListEl.appendChild(holder);
+  }
+
+  // 用户取消（切 tab / 关弹框）：清空待选队列并让所有等待中的 Promise 返回 null
+  function cancelMediaGoPick(reason) {
+    const queue = mediagoPickQueue;
+    mediagoPickQueue = [];
+    if (mediagoPickEl) {
+      mediagoPickEl.style.display = 'none';
+      mediagoPickListEl.innerHTML = '';
+      mediagoPickConfirmBtn.disabled = true;
+    }
+    queue.forEach((item) => item.resolve(null));
+    if (reason && mediagoStatusEl) setMediaGoStatus(reason, 'err');
+  }
+
+  function mediagoTypeOf(url) {
+    if (/bilibili\.com|b23\.tv/i.test(url)) return 'bilibili';
+    if (/\.m3u8($|[?#])/i.test(url)) return 'm3u8';
+    return 'direct';
+  }
+
+  function mediagoHeadersText(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    if (s.charAt(0) !== '{') return s; // 已是每行 Name: Value
+    try {
+      const o = JSON.parse(s);
+      if (!o || typeof o !== 'object' || Array.isArray(o)) return s;
+      return Object.keys(o).map((k) => k + ': ' + o[k]).join('\n');
+    } catch (e) { return s; }
+  }
+
+  async function onMediaGoTest() {
+    mediagoTestBtn.disabled = true;
+    const { base } = mediagoSettings();
+    setMediaGoStatus('正在连接 ' + base + ' …', 'info');
+    try {
+      // MediaGo 没有专门的版本接口，用任务列表探测连通性与认证
+      const list = await mediagoApi('GET', '/api/downloads?current=1&pageSize=1');
+      const total = (list && typeof list.total === 'number') ? list.total : null;
+      setMediaGoStatus('连接成功：' + base + (total === null ? '' : '（当前 ' + total + ' 个任务）'), 'ok');
+    } catch (e) {
+      setMediaGoStatus('连接失败：' + e.message + '。请确认 MediaGo 已启动、地址/端口正确，Docker 认证时填对 API Key', 'err');
+    } finally {
+      mediagoTestBtn.disabled = false;
+    }
+  }
+
+  async function onMediaGoDownload() {
+    const inputs = collectInputs(mediagoFormEl, MEDIAGO_INPUTS);
+    const err = validateInputs(inputs);
+    if (err) { setMediaGoStatus('参数校验失败：' + err, 'err'); return; }
+
+    const urls = String(inputs.urls || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (!urls.length) {
+      setMediaGoStatus('未检测到链接：页面里没有解析出视频直链。请确认在视频详情页打开，' +
+        '或点「载入页面视频」重新提取；也可以手动粘贴下载地址', 'err');
+      return;
+    }
+
+    let headerList;
+    try { headerList = ariaHeaderList(inputs.headers); }
+    catch (e) { setMediaGoStatus('headers 解析失败：' + e.message, 'err'); return; }
+
+    const { base, key } = mediagoSettings();
+    setMediaGoStatus('正在解析 ' + urls.length + ' 条链接的画质…', 'info');
+
+    // 逐条解析画质（m3u8 主播放列表会弹选择，用户确认后才继续下一条）
+    const resolved = [];
+    const skipped = [];
+    const failedUrls = []; // 解析失败、但用户选择仍然发送的原链接
+    let cancelled = false;
+    let forceSend = false; // 用户在解析失败对话框里选择「全部仍然发送」
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+      if (urls.length > 1) {
+        setMediaGoStatus('正在解析第 ' + (i + 1) + '/' + urls.length + ' 条链接…', 'info');
+      }
+      const r = await resolveMediaGoUrl(url, headerList);
+      if (r === null) { cancelled = true; break; }
+      if (r.skip) {
+        // 解析失败：明确停下让用户决策，不静默发送
+        if (!forceSend) {
+          const decision = await askMediaGoFallback(url, r.reason, i + 1, urls.length);
+          if (decision === 'cancel') { cancelled = true; break; }
+          if (decision === 'skip') { skipped.push(url); continue; }
+          if (decision === 'send-all') forceSend = true; // 后续失败的也不再问
+        } else {
+          skipped.push(url);
+        }
+        failedUrls.push(url);
+        resolved.push(url);
+        continue;
+      }
+      resolved.push(r.url);
+    }
+    if (cancelled) {
+      setMediaGoStatus('已取消，未发送任何任务到 MediaGo', 'info');
+      return;
+    }
+    if (!resolved.length) {
+      setMediaGoStatus('没有可发送的链接' + (skipped.length ? '（已跳过 ' + skipped.length + ' 条解析失败的）' : ''), 'err');
+      return;
+    }
+
+    // 提交任务（MediaGo 的 /api/downloads 无选流参数，选中画质已体现在 url 上）
+    const headersText = mediagoHeadersText(inputs.headers);
+    const tasks = resolved.map((url) => {
+      const task = { type: mediagoTypeOf(url), url };
+      if (inputs.save_name) task.name = sanitizeFileName(inputs.save_name);
+      if (inputs.folder) task.folder = inputs.folder;
+      if (headersText) task.headers = headersText;
+      return task;
+    });
+
+    mediagoTriggerBtn.disabled = true;
+    mediagoTriggerBtn.textContent = '发送中…';
+    setMediaGoStatus('正在发送 ' + tasks.length + ' 个任务到 ' + base + ' …', 'info');
+    mediagoTasksEl.innerHTML = '';
+    try {
+      const created = await mediagoApi('POST', '/api/downloads', {
+        tasks,
+        startDownload: true,
+      });
+      const list = Array.isArray(created) ? created : (created && created.list) || [];
+      if (!list.length) {
+        setMediaGoStatus('MediaGo 未返回创建的任务（可能已存在相同任务）', 'info');
+        return;
+      }
+      const ids = list.map((t) => String(t.id));
+      setMediaGoStatus('已创建 ' + list.length + ' 个任务' +
+        (list.length === 1 && list[0].id ? '（#' + list[0].id + '）' : '') +
+        (skipped.length ? '；' + skipped.length + ' 条因解析失败被跳过' : '') +
+        (failedUrls.length ? '；' + failedUrls.length + ' 条解析失败、按原链接发送（MediaGo 用默认选流，画质不受你控制）' : ''), 'ok');
+      mediagoTasksEl.innerHTML = '';
+      list.forEach((t) => mediagoTasksEl.appendChild(mediagoTaskRow({
+        id: t.id, name: t.name, status: t.status || 'waiting', type: t.type,
+      })));
+      pollMediaGoTasks(++mediagoPollToken, ids);
+    } catch (e) {
+      setMediaGoStatus('发送失败：' + e.message, 'err');
+    } finally {
+      mediagoTriggerBtn.disabled = false;
+      mediagoTriggerBtn.textContent = '发送到 MediaGo';
+    }
+  }
+
+  function mediagoBadgeClass(status) {
+    if (status === 'success') return 'completed-success';
+    if (status === 'failed') return 'completed-failure';
+    if (status === 'stopped') return 'completed-cancelled';
+    if (status === 'downloading') return 'in_progress';
+    return 'queued';
+  }
+
+  function mediagoBadgeText(status) {
+    const map = { waiting: '等待中', downloading: '下载中', success: '完成', failed: '失败', stopped: '已停止' };
+    return map[status] || status || '未知';
+  }
+
+  function mediagoTaskRow(st) {
+    const li = el('li');
+    const badge = el('span', 'm3u8-t-badge ' + mediagoBadgeClass(st.status), mediagoBadgeText(st.status));
+    const name = el('span', null, (st.name ? st.name + ' ' : '') + '#' + st.id);
+    const meta = el('span', 'm3u8-t-runmeta', ' · ' + (st.type || '') +
+      (st.file ? ' · ' + basename(st.file) : ''));
+    const stop = el('button', 'm3u8-t-btn', '停止');
+    stop.type = 'button';
+    stop.style.marginLeft = '8px';
+    stop.addEventListener('click', async () => {
+      stop.disabled = true;
+      try {
+        await mediagoApi('POST', '/api/downloads/' + encodeURIComponent(st.id) + '/stop');
+        setMediaGoStatus('已请求停止任务 #' + st.id, 'info');
+      } catch (e) {
+        setMediaGoStatus('停止失败：' + e.message, 'err');
+        stop.disabled = false;
+      }
+    });
+    li.append(badge, document.createTextNode(' '), name, meta, stop);
+    return li;
+  }
+
+  function updateMediaGoTaskRow(li, st) {
+    const badge = li.querySelector('.m3u8-t-badge');
+    if (badge) {
+      badge.className = 'm3u8-t-badge ' + mediagoBadgeClass(st.status);
+      badge.textContent = mediagoBadgeText(st.status);
+    }
+    const meta = li.querySelector('.m3u8-t-runmeta');
+    if (meta) {
+      meta.textContent = ' · ' + (st.type || '') + (st.file ? ' · ' + basename(st.file) : '');
+    }
+    const btn = li.querySelector('button');
+    if (btn) btn.style.display = (st.status === 'downloading' || st.status === 'waiting') ? '' : 'none';
+  }
+
+  async function pollMediaGoTasks(my, ids) {
+    const t0 = Date.now();
+    while (my === mediagoPollToken && Date.now() - t0 < CONFIG.mediagoPollMs) {
+      const rows = [...mediagoTasksEl.children];
+      let pending = 0;
+      for (let i = 0; i < ids.length; i++) {
+        let st;
+        try { st = await mediagoApi('GET', '/api/downloads/' + encodeURIComponent(ids[i])); }
+        catch (e) { st = { id: ids[i], status: 'failed', name: '' }; }
+        if (rows[i]) updateMediaGoTaskRow(rows[i], st);
+        if (st.status === 'waiting' || st.status === 'downloading') pending++;
+      }
+      if (!pending) return;
+      await sleep(CONFIG.mediagoPollInterval);
+    }
+  }
+
+  function resetMediaGoForm() {
+    MEDIAGO_INPUTS.forEach((spec) => {
+      if (!NO_SAVE[spec.key]) store.del(KEY.form((spec.mediago ? 'mediago_' : '') + spec.key));
+    });
+    MEDIAGO_INPUTS.forEach((spec) => {
+      const node = mediagoFormEl.querySelector('[data-key="' + spec.key + '"]');
+      if (!node) return;
+      if (spec.type === 'checkbox') node.checked = !!spec.default;
+      else node.value = String(spec.default === undefined ? '' : spec.default);
+    });
+    setMediaGoStatus('MediaGo 参数已重置为默认值', 'info');
+  }
+
   function setActiveTab(name, persist) {
     const aria = name === 'aria2';
-    if (!githubPaneEl || !ariaPaneEl) return;
-    githubPaneEl.style.display = aria ? 'none' : '';
+    const mg = name === 'mediago';
+    if (!githubPaneEl || !ariaPaneEl || !mediagoPaneEl) return;
+    githubPaneEl.style.display = (aria || mg) ? 'none' : '';
     ariaPaneEl.style.display = aria ? '' : 'none';
-    if (tabGithubEl) tabGithubEl.classList.toggle('active', !aria);
+    mediagoPaneEl.style.display = mg ? '' : 'none';
+    if (tabGithubEl) tabGithubEl.classList.toggle('active', !aria && !mg);
     if (tabAriaEl) tabAriaEl.classList.toggle('active', aria);
-    if (wfLink) wfLink.style.display = aria ? 'none' : '';
+    if (tabMediaGoEl) tabMediaGoEl.classList.toggle('active', mg);
+    if (wfLink) wfLink.style.display = (aria || mg) ? 'none' : '';
     updateWorkflowLabels();
-    if (persist !== false) store.set(KEY.tab, aria ? 'aria2' : 'github');
+    // 离开 MediaGo tab 时放弃未确认的画质选择，避免发送流程挂起
+    if (!mg && mediagoPickQueue.length) cancelMediaGoPick();
+    if (persist !== false) store.set(KEY.tab, mg ? 'mediago' : (aria ? 'aria2' : 'github'));
   }
 
   function setAriaStatus(text, kind) {
@@ -1330,10 +2103,17 @@
     ariaStatusEl.className = 'm3u8-t-status ' + (kind || 'info');
   }
 
-  // 提取/载入的提示同时显示在两个 tab 的状态栏
+  function setMediaGoStatus(text, kind) {
+    if (!mediagoStatusEl) return;
+    mediagoStatusEl.textContent = text;
+    mediagoStatusEl.className = 'm3u8-t-status ' + (kind || 'info');
+  }
+
+  // 提取/载入的提示同时显示在三个 tab 的状态栏
   function setAnyStatus(text, kind) {
     setStatus(text, kind);
     if (ariaStatusEl) setAriaStatus(text, kind);
+    if (mediagoStatusEl) setMediaGoStatus(text, kind);
   }
 
   function ariaSettings() {
@@ -1426,7 +2206,11 @@
     if (err) { setAriaStatus('参数校验失败：' + err, 'err'); return; }
 
     const urls = String(inputs.urls || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-    if (!urls.length) { setAriaStatus('请先填写下载地址（urls）', 'err'); return; }
+    if (!urls.length) {
+      setAriaStatus('未检测到链接：页面里没有解析出视频直链。请确认在视频详情页打开，' +
+        '或点「载入页面视频」重新提取；也可以手动粘贴下载地址', 'err');
+      return;
+    }
 
     let headerList;
     try { headerList = ariaHeaderList(inputs.headers); }
@@ -1639,11 +2423,16 @@
   }
 
   async function onTrigger() {
-    const token = (store.get(KEY.token, '') || '').trim();
-    if (!token) { setStatus('请先在上方填写并保存 GitHub Token', 'err'); return; }
     const inputs = collectInputs();
     const err = validateInputs(inputs);
     if (err) { setStatus('参数校验失败：' + err, 'err'); return; }
+    if (!String(inputs.urls || '').trim()) {
+      setStatus('未检测到链接：页面里没有解析出视频直链。请确认在视频详情页打开，' +
+        '或点「载入页面视频」重新提取；也可以手动粘贴下载地址', 'err');
+      return;
+    }
+    const token = (store.get(KEY.token, '') || '').trim();
+    if (!token) { setStatus('请先在上方填写并保存 GitHub Token', 'err'); return; }
     const ref = refInput.value.trim() || CONFIG.defaultBranch;
     const wf = currentWorkflow();
     const my = ++pollToken;
@@ -1811,7 +2600,8 @@
     rootEl.style.display = '';
     applyTheme();
     updateWorkflowLabels();
-    setActiveTab(store.get(KEY.tab, 'github') === 'aria2' ? 'aria2' : 'github', false);
+    setActiveTab(store.get(KEY.tab, 'github') === 'aria2' ? 'aria2'
+      : (store.get(KEY.tab, 'github') === 'mediago' ? 'mediago' : 'github'), false);
     clampFabPos(); // 弹框打开前确保按钮在屏内（弹框会挡住它，但不能让它跑到屏幕外）
     refreshRecentRuns();
     autoFillFromPage(); // 打开弹框即重新提取视频链接与标题（urls/save_name 不持久化）
@@ -1821,6 +2611,9 @@
     rootEl.style.display = 'none';
     pollToken++; // 作废进行中的轮询
     ariaPollToken++; // 作废 aria2 任务轮询
+    mediagoPollToken++; // 作废 MediaGo 任务轮询
+    cancelMediaGoPick(); // 关弹框时放弃未确认的选流（不发送任何任务）
+    ensureFabInDom(); // 关弹框后按钮必须回到页面上（含重挂 + 夹回视口）
   }
 
   function onKeydown(e) {

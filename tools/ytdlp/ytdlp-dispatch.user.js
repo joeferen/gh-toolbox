@@ -1,10 +1,16 @@
 // ==UserScript==
 // @name         gh-toolbox ytdlp 一键触发器
 // @namespace    https://gh-toolbox/ytdlp
-// @version      1.6.1
-// @description  在 gh-toolbox 仓库页面或 jable.tv / pornhub 视频页显示悬浮按钮，点击弹框填写参数，一键手动触发「yt-dlp 下载器」GitHub Action（workflow_dispatch）；自动从仓库页面快照或当前视频页提取视频直链与标题填入 urls/rename 参数，并轮询展示运行状态与最近运行记录。
+// @version      1.6.2
+// @description  在 gh-toolbox 仓库页面或 jable.tv / pornhub / missav（.ai/.ws/.com 等镜像域）视频页显示悬浮按钮，点击弹框填写参数，一键手动触发「yt-dlp 下载器」GitHub Action（workflow_dispatch）；自动从仓库页面快照或当前视频页提取视频直链与标题填入 urls/rename 参数，并轮询展示运行状态与最近运行记录。
 // @match        https://github.com/*/gh-toolbox*
+// @match        https://*.missav.ai/*
 // @match        https://*.missav.ws/*
+// @match        https://*.missav.com/*
+// @match        https://*.missav.live/*
+// @match        https://*.missav123.com/*
+// @include      https://*.missav.*/*
+// @include      https://missav.*/*
 // @match        https://jable.tv/videos/*
 // @match        https://*.pornhub.com/view_video.php*
 // @grant        GM_setValue
@@ -98,10 +104,10 @@
     videoSites: [
       { host: /(^|\.)jable\.tv$/, path: /^\/videos\// },
       { host: /(^|\.)pornhub\.com$/, path: /^\/view_video\.php/ },
-      // missav：/jur-881、/cn/jur-881、/dm39/jur-881 等番号详情页。
-      // 判据：路径最后一段是番号（字母+数字+连字符，必含数字），列表页如
-      // /actress/xxx、/genres/xxx、/ 均不匹配
-      { host: /(^|\.)missav\.ws$/, path: /^\/(?:[\w-]+\/)?[\w-]*\d[\w-]*\/?$/i },
+      // missav 域名经常换（.ws/.com 被封后主站迁到 .ai，另有 .live、
+      // missav123.com 等镜像）。这里按「missav.<任意 TLD>」通用匹配，
+      // 与 @include 的覆盖范围保持一致；路径放宽，避免 URL 结构一变就消失。
+      { host: /(^|\.)(?:missav|missav123)\.[a-z]{2,}$/i, path: /^\/.*$/ },
     ],
   };
 
@@ -509,31 +515,27 @@
     const packedUrls = [];
     unpackPackedBlocks(html).forEach((src) => {
       let mm;
-      const re4 = /(https?:\/\/[^\s'"<>()]+?\.(?:m3u8|mp4)(?:\?[^\s'"<>()]*)?)/gi;
+      const re4 = /(https?:\/\/[^\s'"<>()]+?\.(?:m3u8|mp4|mpd)(?:\?[^\s'"<>()]*)?)/gi;
       while ((mm = re4.exec(src)) !== null) packedUrls.push(mm[1]);
     });
-    if (!raws.length) packedUrls.forEach((u) => raws.push(u));
+    // 明文候选与 packed 解密候选**始终合并**：missav 页面里常有 preview.mp4
+    // 这类明文干扰项，真正的播放列表只藏在 packed 里；「明文非空就不看 packed」
+    // 会直接拿错成 .preview.mp4。
+    const rawAll = raws.concat(packedUrls);
     const norm = [];
-    raws.forEach((r) => {
+    // 示例占位值 / 预览片 / 缩略图 / 下载端点永远不是播放源，**硬过滤**，
+    // 后面也绝不用它们兜底（否则过滤完为空时会兜回 preview.mp4）。
+    const isPlaceholder = (u) => /^https?:\/\/(www\.)?example\.(com|org|net)(?=[/?#:]|$)/i.test(u);
+    const isPreview = (u) => /preview|screenshot|thumbvtt/i.test(u);
+    const isDownloadEp = (u) => /\/get_media\b|\/download\b/i.test(u);
+    rawAll.forEach((r) => {
       const u = decodeEntities(unescapeJsString(r)).trim();
       if (!u || norm.indexOf(u) !== -1) return;
       if (!/^https?:\/\//i.test(u)) return;
+      if (isPlaceholder(u) || isPreview(u) || isDownloadEp(u)) return;
       norm.push(u);
     });
-    // 前面几条正则可能只匹配到页面里的示例/占位值（如 missav 内联文档代码中的
-    // example.com），此时 packed 解密拿到的真实直链优先采用
-    const isPlaceholder = (u) => /^https?:\/\/(www\.)?example\.(com|org|net)\b/i.test(u);
-    if (norm.length && norm.every(isPlaceholder) && packedUrls.length) {
-      norm.length = 0;
-      packedUrls.forEach((u) => {
-        const v = decodeEntities(unescapeJsString(u)).trim();
-        if (v && norm.indexOf(v) === -1) norm.push(v);
-      });
-    }
-    const isDownloadEp = (u) => /\/get_media\b|\/download\b/i.test(u);
-    const isPreview = (u) => /preview|screenshot|thumbvtt/i.test(u);
-    const candidates = norm.filter((u) => !isDownloadEp(u) && !isPreview(u));
-    const primary = pickBestVideo(candidates.length ? candidates : norm);
+    const primary = pickBestVideo(norm);
     const videos = primary ? [{ title, url: primary }] : [];
     return { title, pageUrl, videos };
   }
