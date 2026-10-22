@@ -809,8 +809,13 @@
   max-width:calc(100vw - 48px);max-height:calc(100vh - 190px);overflow:hidden;white-space:nowrap;box-sizing:border-box}
 #m3u8-t-fab:hover{background:#7440dc}
 #m3u8-t-mask{position:fixed;inset:0;z-index:2147483001;background:rgba(31,35,40,.5);display:flex;align-items:center;justify-content:center;padding:20px}
-#m3u8-t-panel{width:min(720px,94vw);max-height:88vh;overflow:auto;background:#fff;color:#1f2328;border:1px solid #d1d9e0;border-radius:12px;
+#m3u8-t-panel{width:min(720px,94vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden;background:#fff;color:#1f2328;border:1px solid #d1d9e0;border-radius:12px;
   box-shadow:0 8px 40px rgba(31,35,40,.28);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif}
+#m3u8-t-panel>.m3u8-t-body{flex:1;overflow:auto;min-height:0}
+/* 吸底操作区：贴在弹框最底部，不随内容滚动；实色背景挡住滚过下方的内容 */
+.m3u8-t-dock{position:sticky;bottom:0;z-index:2;margin:0 -18px -16px !important;padding:10px 18px 14px;
+  background:#fff;box-shadow:0 -6px 14px rgba(31,35,40,.08);border-top:1px solid #d1d9e0}
+#m3u8-t-root[data-theme="dark"] .m3u8-t-dock{background:#0d1117;border-color:#30363d;box-shadow:0 -6px 14px rgba(0,0,0,.4)}
 #m3u8-t-root[data-theme="dark"] #m3u8-t-fab{background:#8957e5;border-color:#a371f7}
 #m3u8-t-root[data-theme="dark"] #m3u8-t-fab:hover{background:#9e6ffa}
 #m3u8-t-root[data-theme="dark"] #m3u8-t-mask{background:rgba(1,4,9,.7)}
@@ -1196,27 +1201,6 @@
     mediagoPaneEl.dataset.pane = 'mediago';
     mediagoPaneEl.style.display = 'none';
 
-    // --- Token 区 ---
-    const tokenSec = el('div', 'm3u8-t-section');
-    tokenSec.appendChild(el('h3', null, 'GitHub Token'));
-    const tokenRow = el('div', 'm3u8-t-tokenrow');
-    tokenInput = el('input', 'm3u8-t-input');
-    tokenInput.id = 'm3u8-t-token';
-    tokenInput.type = 'password';
-    tokenInput.placeholder = 'ghp_… / github_pat_…';
-    tokenInput.value = store.get(KEY.token, '');
-    const tokenSave = el('button', 'm3u8-t-btn', '保存并验证');
-    tokenSave.type = 'button';
-    tokenSave.addEventListener('click', saveToken);
-    const tokenClear = el('button', 'm3u8-t-btn m3u8-t-btn-danger', '清除');
-    tokenClear.type = 'button';
-    tokenClear.addEventListener('click', clearToken);
-    tokenRow.append(tokenInput, tokenSave, tokenClear);
-    tokenSec.appendChild(tokenRow);
-    tokenSec.appendChild(el('div', 'm3u8-t-hint',
-      '仅保存在本浏览器 Tampermonkey 存储。经典 PAT 需勾选 repo scope；细粒度 PAT 需 Actions: read+write、Contents: read。触发 workflow 必须有该仓库写权限。'));
-    githubPaneEl.appendChild(tokenSec);
-
     // --- 参数区 ---
     const formSec = el('div', 'm3u8-t-section');
     formSec.appendChild(el('h3', null, '触发参数（workflow_dispatch inputs）'));
@@ -1318,12 +1302,32 @@
 
     githubPaneEl.appendChild(formSec);
 
-    // --- 操作区 ---
-    const actionSec = el('div', 'm3u8-t-section');
+    // --- GitHub Token 区（随内容滚动，位于 ref · 触发分支 之后）---
+    const tokenSec = el('div', 'm3u8-t-section');
+    tokenSec.appendChild(el('h3', null, 'GitHub Token'));
+    tokenInput = el('input', 'm3u8-t-input');
+    tokenInput.id = 'm3u8-t-token';
+    tokenInput.type = 'password';
+    tokenInput.placeholder = 'ghp_… / github_pat_…';
+    tokenInput.value = store.get(KEY.token, '');
+    tokenSec.appendChild(tokenInput);
+    tokenSec.appendChild(el('div', 'm3u8-t-hint',
+      '仅保存在本浏览器 Tampermonkey 存储。经典 PAT 需勾选 repo scope；细粒度 PAT 需 Actions: read+write、Contents: read。触发 workflow 必须有该仓库写权限。'));
+    githubPaneEl.appendChild(tokenSec);
+
+    // --- 操作区（悬浮固定在弹框最底部，三个 tab 各有一份）---
+    // 按钮排固定吸底，滚动内容时始终可见可点；状态栏跟随按钮吸底显示
+    const actionSec = el('div', 'm3u8-t-section m3u8-t-dock');
     const actions = el('div', 'm3u8-t-actions');
     triggerBtn = el('button', 'm3u8-t-btn m3u8-t-btn-primary', '触发 Action');
     triggerBtn.type = 'button';
     triggerBtn.addEventListener('click', onTrigger);
+    const tokenSave = el('button', 'm3u8-t-btn', '保存并验证');
+    tokenSave.type = 'button';
+    tokenSave.addEventListener('click', saveToken);
+    const tokenClear = el('button', 'm3u8-t-btn m3u8-t-btn-danger', '清除');
+    tokenClear.type = 'button';
+    tokenClear.addEventListener('click', clearToken);
     const resetBtn = el('button', 'm3u8-t-btn', '重置参数');
     resetBtn.type = 'button';
     resetBtn.addEventListener('click', resetForm);
@@ -1333,16 +1337,15 @@
       ? '重新从当前页面提取视频直链与标题（强制覆盖 urls/save_name）'
       : '重新从选中的快照读取并解析（强制覆盖 urls/save_name）';
     loadPageBtn.addEventListener('click', () => autoFillFromPage());
-    actions.append(triggerBtn, resetBtn, loadPageBtn);
+    actions.append(triggerBtn, tokenSave, tokenClear, resetBtn, loadPageBtn);
     actionSec.appendChild(actions);
     statusEl = el('div', 'm3u8-t-status');
     actionSec.appendChild(statusEl);
     runStatusEl = el('div');
     runStatusEl.style.marginTop = '8px';
     actionSec.appendChild(runStatusEl);
-    githubPaneEl.appendChild(actionSec);
 
-    // --- 最近运行 ---
+    // --- 最近运行（随内容滚动；吸底操作区在 buildModal 末尾统一 append）---
     const runsSec = el('div', 'm3u8-t-section');
     const runsHead = el('div');
     runsHead.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px';
@@ -1355,7 +1358,8 @@
     runsEl = el('ul', 'm3u8-t-runs');
     runsSec.appendChild(runsEl);
     githubPaneEl.appendChild(runsSec);
-
+    // 吸底操作区必须在 pane 的最后（视觉上贴着弹框底部）
+    githubPaneEl.appendChild(actionSec);
     // --- aria2 tab ---
     buildAriaPane(ariaPaneEl);
 
@@ -1467,7 +1471,7 @@
     pane.appendChild(paramSec);
 
     // 操作
-    const actionSec = el('div', 'm3u8-t-section');
+    const actionSec = el('div', 'm3u8-t-section m3u8-t-dock');
     const actions = el('div', 'm3u8-t-actions');
     ariaTriggerBtn = el('button', 'm3u8-t-btn m3u8-t-btn-primary', '添加到 aria2');
     ariaTriggerBtn.type = 'button';
@@ -1485,12 +1489,15 @@
     actionSec.appendChild(ariaStatusEl);
     pane.appendChild(actionSec);
 
+
     // 任务列表
     const taskSec = el('div', 'm3u8-t-section');
     taskSec.appendChild(el('h3', null, 'aria2 任务'));
     ariaTasksEl = el('ul', 'm3u8-t-runs');
     taskSec.appendChild(ariaTasksEl);
     pane.appendChild(taskSec);
+    // 吸底操作区放到最后（视觉上贴着弹框底部）
+    pane.appendChild(actionSec);
   }
 
   // ---------------------------------------------------------------------------
@@ -1536,8 +1543,8 @@
     mediagoPickEl.appendChild(pickActions);
     pane.appendChild(pickSec);
 
-    // 操作
-    const actionSec = el('div', 'm3u8-t-section');
+    // 操作（吸底）
+    const actionSec = el('div', 'm3u8-t-section m3u8-t-dock');
     const actions = el('div', 'm3u8-t-actions');
     mediagoTriggerBtn = el('button', 'm3u8-t-btn m3u8-t-btn-primary', '发送到 MediaGo');
     mediagoTriggerBtn.type = 'button';
@@ -1553,7 +1560,6 @@
     actionSec.appendChild(actions);
     mediagoStatusEl = el('div', 'm3u8-t-status');
     actionSec.appendChild(mediagoStatusEl);
-    pane.appendChild(actionSec);
 
     // 任务列表
     const taskSec = el('div', 'm3u8-t-section');
@@ -1561,6 +1567,8 @@
     mediagoTasksEl = el('ul', 'm3u8-t-runs');
     taskSec.appendChild(mediagoTasksEl);
     pane.appendChild(taskSec);
+    // 吸底操作区放到最后（视觉上贴着弹框底部）
+    pane.appendChild(actionSec);
   }
 
   function mediagoSettings() {

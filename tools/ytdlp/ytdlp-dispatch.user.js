@@ -379,11 +379,39 @@
   }
 
   // 多个清晰度里取最高（720P_4000K_xxx.mp4/master.m3u8 → 720）；无清晰度标记的排最后
+  // 从候选直链里挑一条提交。优先级（类型优先于画质，播放列表/分片才是可下载源）：
+  //   1. m3u8 主播放列表（文件名 playlist/master/index/manifest）
+  //   2. 带分辨率标记的 m3u8：取最高
+  //   3. 其他 m3u8（取路径最浅的）
+  //   4. 没有 m3u8 时才退回 mp4 等直链（按分辨率取最高）
+  // 注意：不能用「无分辨率标记」判断 master——preview.mp4 也没有标记。
   function pickBestVideo(urls) {
+    const list = (urls || []).filter(Boolean);
+    if (!list.length) return '';
+    const namedMaster = (u) => /(?:^|\/)(?:playlist|master|index|manifest)\.m3u8(?:[?#]|$)/i.test(u);
+    const hls = list.filter((u) => /\.m3u8(?:[?#]|$)/i.test(u));
+    if (hls.length) {
+      const named = hls.filter(namedMaster);
+      if (named.length) return named[0];
+      const withRes = hls.filter((u) => /\d{3,4}[Pp](?:_|\b)/.test(u));
+      if (withRes.length) {
+        let best = '', bestScore = -1;
+        withRes.forEach((u) => {
+          const mm = u.match(/(\d{3,4})[Pp](?:_|\b)/);
+          const score = mm ? parseInt(mm[1], 10) : 0;
+          if (score > bestScore) { bestScore = score; best = u; }
+        });
+        return best;
+      }
+      const depth = (u) => {
+        try { return new URL(u).pathname.split('/').filter(Boolean).length; } catch (e) { return 99; }
+      };
+      return hls.slice().sort((a, b) => depth(a) - depth(b))[0];
+    }
     let best = '', bestScore = -1;
-    (urls || []).forEach((u) => {
-      const m = u.match(/(\d{3,4})[Pp](?:_|\b)/);
-      const score = m ? parseInt(m[1], 10) : 0;
+    list.forEach((u) => {
+      const mm = u.match(/(\d{3,4})[Pp](?:_|\b)/);
+      const score = mm ? parseInt(mm[1], 10) : 0;
       if (score > bestScore) { bestScore = score; best = u; }
     });
     return best;
