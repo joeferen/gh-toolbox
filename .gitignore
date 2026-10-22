@@ -1,8 +1,13 @@
 # 各工具的输出目录（由 GitHub Actions Artifact 分发）
 tools/*/downloads/
+tools/*/downloads/.tmp/
 
 # ytdlp 下载档案：仅本地记录存档，不参与跳过判据，不写回仓库
 tools/ytdlp/.ytdlp-archive.txt
+
+# m3u8 工具：N_m3u8DL-RE 二进制缓存（按需自动下载）与页面快照
+tools/m3u8/bin/
+tools/m3u8/html
 
 # 青龙面板的数据卷 / cloudflared 二进制与日志（体积大且含 sqlite，走 Artifact 分发）
 tools/qinglong/data/

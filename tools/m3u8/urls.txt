@@ -1,0 +1,7 @@
+# N_m3u8DL-RE 下载目标清单
+# 每行一个 M3U8/MPD 直链 URL；"#" 开头为注释；空行忽略。
+# 在 Actions 页面手动触发时传入 urls 参数，则优先使用参数、忽略本文件。
+#
+# 示例（取消注释即可测试）：
+# https://example.com/video/index.m3u8
+# https://example.com/video/manifest.mpd

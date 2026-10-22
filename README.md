@@ -1,12 +1,13 @@
 # gh-toolbox
 
-GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 Python 脚本控制一个 CLI 工具，由独立 workflow 调度（手动输入 / 定时 / 文件变更触发），产物按工具需要留存（ytdlp 走 HF datasets 上传，青龙面板走 Artifact）。yt-dlp 是第一个入驻的批处理工具，青龙面板是第一个入驻的服务型工具（长驻进程 + 隧道暴露），后续可继续添加。
+GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 Python 脚本控制一个 CLI 工具，由独立 workflow 调度（手动输入 / 定时 / 文件变更触发），产物按工具需要留存（ytdlp / m3u8 走 HF datasets 上传，青龙面板走 Artifact）。yt-dlp 是第一个入驻的批处理工具，青龙面板是第一个入驻的服务型工具（长驻进程 + 隧道暴露），N_m3u8DL-RE 是第二个批处理工具（专攻 HLS/DASH 流下载），后续可继续添加。
 
 ## 工具列表
 
 | 工具 | 说明 | Workflow | 入口脚本 |
 |---|---|---|---|
 | `ytdlp` | yt-dlp 批量下载视频/播放列表 | `.github/workflows/ytdlp.yml` | `tools/ytdlp/download.py` |
+| `m3u8` | N_m3u8DL-RE 下载 HLS(m3u8)/DASH(mpd) 流 | `.github/workflows/m3u8.yml` | `tools/m3u8/download.py` |
 | `qinglong` | 托管青龙面板，控制端口经 CF Tunnel 映射访问 | `.github/workflows/qinglong.yml` | `tools/qinglong/run_panel.py` |
 
 ## 通用约定
@@ -25,6 +26,14 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 │   │   ├── ytdlp-dispatch.user.js # 油猴脚本（可选）：仓库/jable.tv/pornhub 页面悬浮按钮一键触发 workflow
 │   │   ├── .ytdlp-archive.txt     # 下载档案（仅记录存档，不作跳过判据，不写回仓库）
 │   │   └── downloads/             # 输出目录（gitignore；留存靠 HF 上传或本地运行）
+│   ├── m3u8/
+│   │   ├── download.py            # 主脚本（入口）：定位/自动下载 N_m3u8DL-RE 并调度下载
+│   │   ├── requirements.txt       # 该工具专属依赖（N_m3u8DL-RE 本体不走 pip，脚本按 release 自动下载）
+│   │   ├── urls.txt               # 输入清单（M3U8/MPD 直链）
+│   │   ├── m3u8-dispatch.user.js  # 油猴脚本（可选）：仓库/jable.tv/pornhub 页面悬浮按钮一键触发 workflow
+│   │   ├── html/                  # 页面快照（另存的网页 HTML，油猴脚本打开弹框时自动解析提取视频直链+标题）
+│   │   ├── bin/                   # N_m3u8DL-RE 二进制缓存（gitignore，按需自动下载）
+│   │   └── downloads/             # 输出目录（gitignore；留存靠 HF 上传或本地运行）
 │   └── qinglong/
 │       ├── run_panel.py           # 主脚本（入口）：起面板 + CF Tunnel + 保活
 │       ├── requirements.txt       # 无第三方依赖（仅标准库）
@@ -39,7 +48,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 - 工具脚本自包含：输入清单、档案、输出目录均相对**脚本所在目录**解析，可从任意 cwd 运行。
 - 每个工具一个 workflow，步骤骨架固定：
   `checkout → setup-python → pip install -r tools/<工具>/requirements.txt → 运行脚本`
-- 触发方式按工具自行选择（`workflow_dispatch` / `schedule` / `push`）；**ytdlp 当前为纯手动触发**，参数在 Run workflow 时填写。
+- 触发方式按工具自行选择（`workflow_dispatch` / `schedule` / `push`）；**ytdlp / m3u8 当前为纯手动触发**，参数在 Run workflow 时填写。
 - 例外：服务型工具（`qinglong`）**不加 `push` 触发**——代码变更就自动拉起一个最长 6 小时的长驻任务没有意义，只手动 / 定时启动。
 - **workflow 不向仓库写任何文件**：产物按工具自行分发（HF datasets / Artifact / 其他存储），仓库保持只读（`permissions: contents: read`）；需要跨运行保留的状态放工具目录内或随产物分发，不提交回仓库。
 
@@ -50,6 +59,144 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 3. `cp .github/workflows/ytdlp.yml .github/workflows/<新工具名>.yml`，把其中的 `tools/ytdlp` 路径替换为新工具名，按需调整 inputs / cron / artifact
 4. 在本 README「工具列表」加一行
 5. 提交推送，Actions 页面即可看到新 workflow
+
+## m3u8 工具说明
+
+控制 [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE)（跨平台 DASH/HLS/MSS 下载器）批量下载 HLS(m3u8) / DASH(mpd) 流。功能对齐 ytdlp 工具：URL 清单 → 下载 → 混流封装 → 可选上传 HF datasets，且同样提供油猴脚本一键触发。与 ytdlp 的分工：yt-dlp 胜在站点解析广（ YouTube/B 站等千余站点），N_m3u8DL-RE 胜在流处理专业（多轨道选择、AES-128/SAMPLE-AES 解密、直播录制、DASH Period 处理）。
+
+### 快速开始（仅手动触发）
+
+1. 编辑 `tools/m3u8/urls.txt`，填入 M3U8/MPD 直链（每行一个，`#` 注释）。
+2. 打开仓库 **Actions → N_m3u8DL-RE 下载器 → Run workflow**，按需填写参数（见下表），点 **Run workflow**。
+3. 运行结束后：runner 是临时的，下载的文件**默认不保留**——需要文件就勾选 `hf_upload` 上传到 HF datasets，或本地运行。日志里能看到完整下载过程（解析/选流/实时进度/合并/混流/跳过），每个任务完成后输出文件路径、大小与耗时。
+4. workflow 会自动确保 ffmpeg 可用（分片合并与混流的硬依赖）；N_m3u8DL-RE 本体由脚本按 latest release 自动下载（`bin/` 已 gitignore，本地同样自动下载，也可用 `M3U8_BIN` 指定已有二进制）。
+
+#### 手动触发参数
+
+| 输入 | 类型 | 说明 | 默认 |
+|---|---|---|---|
+| `urls` | string | 下载目标，每行一个（M3U8/MPD 直链）；留空用 `urls.txt` | 空 |
+| `select_video` | string | 视频流选择表达式（如 `best`、`res="1920*":codecs=hvc1:for=best`、`bwMin=800:bwMax=3000:for=best`）；填写后走 `--select-video` | 空 |
+| `auto_select` | boolean | 自动选择所有类型的最佳轨道（`--auto-select`）。**注意**：两者都不给时 N_m3u8DL-RE 会进入交互选流，CI 上无 TTY 直接失败——所以默认勾选 | `true` |
+| `save_name` | string | 输出文件名（不含扩展名，如 `myvideo`）；留空按 URL 自动派生（取路径尾段 + 查询串指纹）；多个 URL 时自动加序号（`myvideo-2.mp4`）避免覆盖 | 空 |
+| `overwrite` | boolean | 是否覆盖目标文件：勾选=**强制重新下载**并删除已存在的同名文件；不勾选=目标文件已存在则**跳过、不下载** | `false` |
+| `mux_format` | choice | 下载完成后混流封装（**依赖 ffmpeg**，workflow 自动保证）：`mp4`（默认）/ `mkv` / `ts` / `none` 不混流（输出轨道原文件） | `mp4` |
+| `thread_count` | string | 下载线程数（分片并发） | `16` |
+| `headers` | string | 自定义请求头，单行 JSON（如 `{"Referer":"https://example.com/"}`）；本地运行也支持每行 `Name: Value`。值不会打进日志 | 空 |
+| `hf_upload` | boolean | 下载完成后上传到 Hugging Face datasets（需 Secret `M3U8_HF_TOKEN`） | `false` |
+| `hf_repo` | string | HF dataset 仓库 ID（如 `myuser/my-videos`）；留空则用 Secret `M3U8_HF_REPO` | 空 |
+| `hf_path` | string | 上传到数据集仓库内的子目录（如 `videos/2024`），留空 = 根路径 | 空 |
+| `extra_args` | string | N_m3u8DL-RE 附加命令行参数，空格分隔原样透传（如 `--key KID:KEY` 解密、`--live-record-limit 00:30:00` 直播限时录制、`--custom-range 05:00-20:00` 只下部分分片、`-ss all` 连字幕一起下） | 空 |
+
+常用组合：
+
+| 需求 | 参数 |
+|---|---|
+| 只要 1080p | `select_video=res="1920*":for=best` |
+| 上传到 Hugging Face 数据集 | `hf_upload` 勾选 + `hf_repo` 填写 |
+| 站点要 Referer/UA 才放行 | `headers={"Referer":"https://example.com/"}` |
+| 强制重新下载 | `overwrite` 勾选 |
+| 已下载过，只下新的 | 不勾选 `overwrite`（默认，自动跳过） |
+| 输出 MKV（多音轨/字幕兼容性好） | `mux_format=mkv` |
+| AES-128 加密流 | 无需配置（自动识别密钥）；自带 KEY 时 `extra_args=--key KID:KEY` |
+| 直播流限时录制 30 分钟 | `extra_args=--live-record-limit 00:30:00` |
+| 只下第 5~20 分钟 | `extra_args=--custom-range 05:00-20:00` |
+| 字幕也要 | `extra_args=-ss all` |
+
+### 环境变量
+
+| 变量 | 说明 | 默认 |
+|---|---|---|
+| `M3U8_URLS` | 下载目标（换行/逗号分隔），优先于 `urls.txt` | 空 |
+| `M3U8_BIN` | N_m3u8DL-RE 可执行文件路径；不设则 PATH > bin/ 缓存 > 自动下载 | 空 |
+| `M3U8_RE_VERSION` | 要使用的 release 版本 tag（如 `v0.7.0`） | `latest` |
+| `M3U8_OUTPUT_DIR` | 输出目录，相对路径基于工具目录解析 | `downloads` |
+| `M3U8_TMP_DIR` | 临时分片目录 | `downloads/.tmp` |
+| `M3U8_SELECT_VIDEO` | 视频流选择表达式 | 空 |
+| `M3U8_AUTO_SELECT` | 自动选所有最佳轨道（`1`/`true`/`yes`/`on`） | `1` |
+| `M3U8_SAVE_NAME` | 输出文件名（不含扩展名）；多 URL 自动加序号 | 空 |
+| `M3U8_OVERWRITE` | 覆盖目标文件（`1`/`true`/`yes`/`on`）：强制重新下载；不置=目标文件已存在则跳过 | 关 |
+| `M3U8_MUX_FORMAT` | 混流封装格式（**依赖 ffmpeg**，缺失脚本报错退出码 2）：`mp4`/`mkv`/`ts`/`none` | `mp4` |
+| `M3U8_THREAD_COUNT` | 下载线程数 | `16` |
+| `M3U8_RETRIES` | 每分片重试次数 | `7` |
+| `M3U8_COOKIES` | Netscape cookies 文件路径 | 空 |
+| `M3U8_HEADERS` | 自定义请求头：JSON 对象（推荐）或每行 `Name: Value`；格式错误退出码 2 | 空 |
+| `M3U8_EXTRA_ARGS` | N_m3u8DL-RE 附加命令行参数（空格分隔，原样透传） | 空 |
+| `M3U8_VERBOSE` | 置 1 输出 N_m3u8DL-RE DEBUG 日志 | 空 |
+| `M3U8_HF_UPLOAD` | 启用上传到 Hugging Face datasets（`1`/`true`/`yes`/`on`） | 关 |
+| `M3U8_HF_REPO` | HF dataset 仓库 ID（`用户名/数据集名`） | 空 |
+| `M3U8_HF_PRIVATE` | 创建仓库时是否私有 | `1`（私有） |
+| `M3U8_HF_PATH` | 上传到数据集仓库内的子目录，留空 = 根路径 | 空 |
+| `M3U8_HF_TOKEN` | Hugging Face 令牌（带工具前缀 `M3U8_`，避免多工具 token 混用） | 空 |
+
+### 本地运行
+
+```bash
+pip install -r tools/m3u8/requirements.txt   # 仅 huggingface_hub；二进制自动下载
+
+# 用 urls.txt（脚本自定位，任意目录运行均可；N_m3u8DL-RE 首次运行自动下载到 tools/m3u8/bin/）
+python tools/m3u8/download.py
+
+# 命令行直接传 URL
+python tools/m3u8/download.py "https://example.com/video/index.m3u8"
+
+# 指定输出文件名
+M3U8_SAVE_NAME=myvideo python tools/m3u8/download.py "https://example.com/video/index.m3u8"
+
+# 只要 1080p，输出 MKV
+M3U8_SELECT_VIDEO='res="1920*":for=best' M3U8_MUX_FORMAT=mkv python tools/m3u8/download.py
+
+# 不混流（保留轨道原文件，无需 ffmpeg）
+M3U8_MUX_FORMAT=none python tools/m3u8/download.py
+
+# 自定义请求头（JSON；也支持每行 Name: Value，值不会打进日志）
+M3U8_HEADERS='{"Referer":"https://example.com/","User-Agent":"Mozilla/5.0"}' \
+  python tools/m3u8/download.py "https://example.com/video/index.m3u8"
+
+# 附加参数透传：直播限时录制 30 分钟
+M3U8_EXTRA_ARGS="--live-record-limit 00:30:00" python tools/m3u8/download.py "https://example.com/live.m3u8"
+
+# 下载并上传到 Hugging Face datasets 的指定子目录（需 M3U8_HF_TOKEN 或本机 hf auth login）
+M3U8_HF_UPLOAD=1 M3U8_HF_REPO=myuser/my-videos M3U8_HF_PATH=videos/2024 python tools/m3u8/download.py
+```
+
+### cookies（可选）
+
+需要登录态的站点：把 Netscape 格式 cookies.txt base64 后存为仓库 Secret `M3U8_COOKIES`，workflow 会自动解码并传给 N_m3u8DL-RE（`--cookies`）。生成方式同 ytdlp 工具：
+
+```bash
+base64 -w0 cookies.txt
+```
+
+### 覆盖与跳过（overwrite）
+
+| 勾选状态 | 行为 |
+|---|---|
+| 不勾选（默认） | 下载前检查目标文件（`save_name`/URL 派生名 + mp4/mkv/ts 等常见后缀）：已存在 → 跳过不下载；不存在 → 下载 |
+| 勾选 | 强制重新下载：先删除已存在的同名产物（各扩展名都清），下载完成直接覆盖 |
+
+### 油猴脚本一键触发（可选）
+
+`tools/m3u8/m3u8-dispatch.user.js` 是 ytdlp 油猴脚本的姊妹版，功能完全一致：在仓库页面或 jable.tv / pornhub 视频页右下角显示悬浮按钮（紫色 **⬇ m3u8**，与 ytdlp 的绿色按钮并存且位置各自记忆），点击弹框填参数一键触发本 workflow，并轮询展示运行状态。差异仅在：
+
+- 默认触发目标为 `m3u8.yml`（N_m3u8DL-RE 下载器）；触发目标 owner/repo/workflow 同样全部手填、不写死。
+- 弹框表单与 m3u8.yml 的 inputs 一一对应（urls / select_video / auto_select / save_name / overwrite / mux_format / thread_count / headers / hf_upload / hf_repo / hf_path / extra_args）。
+- 页面快照目录为 `tools/m3u8/html/`（把视频页另存为 HTML 推送到该目录，仓库页打开弹框即可一键触发）。
+- 视频标题自动填入 `rename` 栏（仅作备注展示，实际文件名由 `save_name`/URL 派生决定）。
+- 存储前缀 `m3u8_trigger_`，与 ytdlp 脚本的配置互不干扰；两脚本可同时安装。
+
+安装方式与 Token 权限要求见「ytdlp 工具说明 → 油猴脚本一键触发」，两者一致。
+
+### 注意事项
+
+- **ffmpeg 硬依赖**：N_m3u8DL-RE 的分片合并（默认 LOCAL_HTTP 方式）与 `-M` 混流都依赖 ffmpeg；`M3U8_MUX_FORMAT=none` 时混流步骤跳过，但 TS/fMP4 分片的合并仍需要。workflow 自动保证；本地运行必须自备。
+- **非交互选流**：CI 无 TTY，交互选流菜单会直接失败。脚本始终以 `--auto-select` 或 `--select-video` 运行（表达式优先）；确实需要精细选流时用 `select_video` 表达式（语法见 N_m3u8DL-RE 的 `--morehelp select-video`）。
+- **DRM**：N_m3u8DL-RE 只处理标准加密（AES-128 / SAMPLE-AES / CENC，KEY 已知时可用 `--key`）；Widevine 级 DRM 不支持。
+- **命名与指纹**：`save_name` 留空时从 URL 派生（路径尾段 + 查询串 md5 指纹前 6 位），同一页面不同清晰度/签名的 URL 不会互相覆盖；手动 `save_name` 多 URL 时自动加 `-2/-3` 序号。
+- **后缀探测**：与 ytdlp 工具一样，下载完成后脚本会用 ffprobe 探测真实封装，TS 冒充 .mp4（或反之）时如实改名（仅改名不转码；要 MP4 封装请用 `mux_format=mp4`）。
+- **产物留存**：与 ytdlp 相同，不上传 GitHub Artifact（限额原因）；需要文件就启用 `hf_upload` 传到 HF datasets，或本地运行。
+- **超时**：job `timeout-minutes: 360` 为 GitHub 托管 runner 上限，特大任务需拆分。
+- **时效性**：N_m3u8DL-RE 默认取 latest release；指定版本用 `M3U8_RE_VERSION`。m3u8 直链有时效性（签名过期），过期后重新提取一次即可。
 
 ## ytdlp 工具说明
 

@@ -1,0 +1,141 @@
+name: N_m3u8DL-RE 下载器
+
+# 仅手动触发：在 Actions 页面 Run workflow 时按需填写参数
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: "下载目标（M3U8/MPD 直链，每行一个；留空则使用 tools/m3u8/urls.txt）"
+        required: false
+        default: ""
+      select_video:
+        description: '视频流选择表达式，如 best、res="1920*":codecs=hvc1:for=best、bwMin=800:for=best'
+        required: false
+        default: ""
+      auto_select:
+        description: "自动选择所有类型的最佳轨道（不勾选且未填流选择表达式时，交互选流在 CI 上会直接失败）"
+        required: false
+        default: true
+        type: boolean
+      save_name:
+        description: "输出文件名（不含扩展名，如 myvideo）；留空按 URL 自动派生（同名已存在则跳过）"
+        required: false
+        default: ""
+      overwrite:
+        description: "是否覆盖目标文件：勾选=强制重新下载并删除已存在的同名文件；不勾选=目标文件已存在则跳过不下载"
+        required: false
+        default: false
+        type: boolean
+      mux_format:
+        description: "下载完成后混流封装格式（依赖 ffmpeg，workflow 自动保证）：none=不混流(输出轨道原文件) / mp4 / mkv / ts"
+        required: false
+        default: "mp4"
+        type: choice
+        options:
+          - "mp4"
+          - "mkv"
+          - "ts"
+          - "none"
+      thread_count:
+        description: "下载线程数（分片并发）"
+        required: false
+        default: "16"
+      headers:
+        description: '自定义请求头（单行 JSON，如 {"Referer":"https://example.com/"}；本地运行也支持每行 Name: Value）；留空不用'
+        required: false
+        default: ""
+        type: string
+      hf_upload:
+        description: "下载完成后上传到 Hugging Face datasets（需配 Secret M3U8_HF_TOKEN）"
+        required: false
+        default: false
+        type: boolean
+      hf_repo:
+        description: "HF dataset 仓库 ID（用户名/数据集名，如 myuser/my-videos）；留空则用 Secret M3U8_HF_REPO"
+        required: false
+        default: ""
+      hf_path:
+        description: "上传到 HF 数据集仓库内的子目录（如 videos/2024），留空 = 根路径"
+        required: false
+        default: ""
+      extra_args:
+        description: 'N_m3u8DL-RE 附加命令行参数（空格分隔，如 --key KID:KEY --live-record-limit 00:30:00）'
+        required: false
+        default: ""
+
+# 允许并发：不设 concurrency，多次手动触发各自立即起 runner 排队跑，互不等待。
+# runner 之间相互隔离（产物各自本地），互不影响。
+
+permissions:
+  contents: read # 只读检出，不向仓库写任何文件
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/m3u8/requirements.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -U -r tools/m3u8/requirements.txt
+
+      # N_m3u8DL-RE 的分片合并/混流依赖 ffmpeg：runner 镜像一般已带，
+      # 缺失则自动安装，装完强制校验
+      - name: 确保 ffmpeg 可用
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            echo "未检测到 ffmpeg，正在安装..."
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          fi
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            echo "::error::ffmpeg 仍不可用，分片合并与混流都无法进行"
+            exit 1
+          fi
+          ffmpeg -version | head -n 1
+
+      # 可选：在仓库 Secrets 配置 M3U8_COOKIES（cookies.txt 的 base64）后自动启用
+      # 注意：secrets 上下文不能直接用于 if 条件（GitHub 会报 Unrecognized named-value），
+      # 这里透传进 env，由 shell 判断是否为空
+      - name: 写入 cookies（可选）
+        env:
+          M3U8_COOKIES_B64: ${{ secrets.M3U8_COOKIES }}
+        run: |
+          if [ -n "$M3U8_COOKIES_B64" ]; then
+            printf '%s' "$M3U8_COOKIES_B64" | base64 -d > cookies.txt
+            echo "M3U8_COOKIES=cookies.txt" >> "$GITHUB_ENV"
+            echo "已写入 cookies.txt（来源：secret M3U8_COOKIES）"
+          else
+            echo "未配置 secret M3U8_COOKIES，跳过（无需登录态的下载不受影响）"
+          fi
+
+      # GitHub Action 控制 Python 脚本的入口：inputs -> 环境变量 -> 脚本
+      # N_m3u8DL-RE 二进制由脚本按需自动下载（latest release，linux 对应架构）
+      # 产物留存：runner 是临时的，文件默认不保留；需要文件就勾选 hf_upload
+      # 上传到 HF datasets（或本地运行），不上传 GitHub Artifact
+      - name: 运行下载脚本
+        env:
+          M3U8_URLS: ${{ github.event.inputs.urls }}
+          M3U8_SELECT_VIDEO: ${{ github.event.inputs.select_video }}
+          M3U8_AUTO_SELECT: ${{ github.event.inputs.auto_select }}
+          M3U8_SAVE_NAME: ${{ github.event.inputs.save_name }}
+          M3U8_OVERWRITE: ${{ github.event.inputs.overwrite }}
+          M3U8_MUX_FORMAT: ${{ github.event.inputs.mux_format }}
+          M3U8_THREAD_COUNT: ${{ github.event.inputs.thread_count }}
+          M3U8_HEADERS: ${{ github.event.inputs.headers }}
+          M3U8_EXTRA_ARGS: ${{ github.event.inputs.extra_args }}
+          M3U8_HF_UPLOAD: ${{ github.event.inputs.hf_upload }}
+          M3U8_HF_REPO: ${{ github.event.inputs.hf_repo || secrets.M3U8_HF_REPO }}
+          M3U8_HF_PATH: ${{ github.event.inputs.hf_path }}
+          M3U8_HF_TOKEN: ${{ secrets.M3U8_HF_TOKEN }}
+        run: python tools/m3u8/download.py
