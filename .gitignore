@@ -9,6 +9,9 @@ tools/ytdlp/.ytdlp-archive.txt
 tools/m3u8/bin/
 tools/m3u8/html
 
+# aria2 工具：静态编译版 aria2c 二进制缓存（按需自动下载）
+tools/aria2/bin/
+
 # 青龙面板的数据卷 / cloudflared 二进制与日志（体积大且含 sqlite，走 Artifact 分发）
 tools/qinglong/data/
 tools/qinglong/bin/

@@ -8,6 +8,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 |---|---|---|---|
 | `ytdlp` | yt-dlp 批量下载视频/播放列表 | `.github/workflows/ytdlp.yml` | `tools/ytdlp/download.py` |
 | `m3u8` | N_m3u8DL-RE 下载 HLS(m3u8)/DASH(mpd) 流 | `.github/workflows/m3u8.yml` | `tools/m3u8/download.py` |
+| `aria2` | aria2c 多连接加速下载直链文件 | `.github/workflows/aria2.yml` | `tools/aria2/download.py` |
 | `qinglong` | 托管青龙面板，控制端口经 CF Tunnel 映射访问 | `.github/workflows/qinglong.yml` | `tools/qinglong/run_panel.py` |
 
 ## 通用约定
@@ -33,6 +34,12 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 │   │   ├── m3u8-dispatch.user.js  # 油猴脚本（可选）：仓库/jable.tv/pornhub 页面悬浮按钮一键触发 workflow
 │   │   ├── html/                  # 页面快照（另存的网页 HTML，油猴脚本打开弹框时自动解析提取视频直链+标题）
 │   │   ├── bin/                   # N_m3u8DL-RE 二进制缓存（gitignore，按需自动下载）
+│   │   └── downloads/             # 输出目录（gitignore；留存靠 HF 上传或本地运行）
+│   ├── aria2/
+│   │   ├── download.py            # 主脚本（入口）：定位/自动下载 aria2c 并调度下载
+│   │   ├── requirements.txt       # 该工具专属依赖（aria2c 本体不走 pip，脚本按 release 自动下载）
+│   │   ├── urls.txt               # 输入清单（直链文件 URL）
+│   │   ├── bin/                   # aria2c 静态编译二进制缓存（gitignore，按需自动下载）
 │   │   └── downloads/             # 输出目录（gitignore；留存靠 HF 上传或本地运行）
 │   └── qinglong/
 │       ├── run_panel.py           # 主脚本（入口）：起面板 + CF Tunnel + 保活
@@ -241,6 +248,128 @@ MediaGo tab 还提供：服务地址/API Key 填写（按 host 记忆，Docker �
 - **产物留存**：与 ytdlp 相同，不上传 GitHub Artifact（限额原因）；需要文件就启用 `hf_upload` 传到 HF datasets，或本地运行。
 - **超时**：job `timeout-minutes: 360` 为 GitHub 托管 runner 上限，特大任务需拆分。
 - **时效性**：N_m3u8DL-RE 默认取 latest release；指定版本用 `M3U8_RE_VERSION`。m3u8 直链有时效性（签名过期），过期后重新提取一次即可。
+
+## aria2 工具说明
+
+控制 [aria2](https://github.com/aria2/aria2)（aria2c）多连接加速下载**直链文件**。与 m3u8 / ytdlp 的分工：yt-dlp 胜在站点解析广，N_m3u8DL-RE 胜在流处理专业（多轨道选择、解密、直播录制），aria2 胜在纯直链的多连接吞吐（单连接限速的服务器、大文件、网盘直链等场景）。
+
+> **只支持直链**：aria2 不解析网页、不合并 HLS/DASH 分片——给 `.m3u8`/`.mpd` 只会下到播放列表文本本身。需要 HLS/DASH 流处理请用 m3u8 / ytdlp 工具。
+
+### 快速开始（仅手动触发）
+
+1. 编辑 `tools/aria2/urls.txt`，填入直链 URL（每行一个，`#` 注释）。
+2. 打开仓库 **Actions → aria2 下载器 → Run workflow**，按需填写参数（见下表），点 **Run workflow**。
+3. 运行结束后：runner 是临时的，下载的文件**默认不保留**——需要文件就勾选 `hf_upload` 上传到 HF datasets，或本地运行。日志里能看到完整下载过程（连接/分片/实时进度/跳过），每个任务完成后输出文件路径、大小与耗时。
+4. workflow 会自动确保 aria2 可用（runner 镜像一般已带）；脚本也有兜底：PATH 没有 aria2c 时自动下载静态编译版到 `tools/aria2/bin/`（gitignore）。
+
+#### 手动触发参数
+
+| 输入 | 类型 | 说明 | 默认 |
+|---|---|---|---|
+| `urls` | string | 下载目标，每行一个（直链文件 URL）；留空用 `urls.txt` | 空 |
+| `save_name` | string | 输出文件名（不含扩展名，如 `myvideo`）；留空按 URL 自动派生（取路径尾段 + 查询串指纹）；多个 URL 时自动加序号（`myvideo-2.mp4`）避免覆盖 | 空 |
+| `overwrite` | boolean | 是否覆盖目标文件：勾选=**强制重新下载**并删除已存在的同名文件；不勾选=目标文件已存在则**跳过、不下载** | `false` |
+| `connections` | string | 单服务器最大连接数 `-x`（aria2 协议上限 16）；服务器单连接限速时调大 | `16` |
+| `split` | string | 单文件分片数 `-s` | `16` |
+| `min_split_size` | string | 分片最小尺寸 `-k`（如 `1M` / `4M`）；调大可减少小文件的碎片请求 | `1M` |
+| `retries` | string | 每连接重试次数 | `5` |
+| `headers` | string | 自定义请求头，单行 JSON（如 `{"Referer":"https://example.com/"}`）；本地运行也支持每行 `Name: Value`。**aria2 不允许设置 Cookie 头**，登录态请配 Secret `ARIA2_COOKIES`。值不会打进日志 | 空 |
+| `hf_upload` | boolean | 下载完成后上传到 Hugging Face datasets（需 Secret `ARIA2_HF_TOKEN`） | `false` |
+| `hf_repo` | string | HF dataset 仓库 ID（如 `myuser/my-files`）；留空则用 Secret `ARIA2_HF_REPO` | 空 |
+| `hf_path` | string | 上传到数据集仓库内的子目录（如 `files/2024`），留空 = 根路径 | 空 |
+| `extra_args` | string | aria2c 附加命令行参数，空格分隔原样透传（如 `--all-proxy http://...` 走代理、`--lowest-speed-limit 1M` 慢速熔断、`--checksum sha-256=...` 校验） | 空 |
+
+常用组合：
+
+| 需求 | 参数 |
+|---|---|
+| 服务器单连接限速，想跑满带宽 | 默认即可（`connections=16`）；还不行调 `min_split_size=1M` 增加分片 |
+| 上传到 Hugging Face 数据集 | `hf_upload` 勾选 + `hf_repo` 填写 |
+| 站点要 Referer/UA 才放行 | `headers={"Referer":"https://example.com/"}` |
+| 需要登录态（下载链路要 Cookie） | 配 Secret `ARIA2_COOKIES`（Netscape cookies.txt 的 base64），**不能用 headers 塞 Cookie** |
+| 走代理下载 | `extra_args=--all-proxy http://127.0.0.1:7890` |
+| 强制重新下载 | `overwrite` 勾选 |
+| 已下载过，只下新的 | 不勾选 `overwrite`（默认，自动跳过） |
+| 断点续传 | 默认开启（`--continue`，`.aria2` 控制文件自动管理）；`overwrite` 勾选时会清掉旧断点 |
+
+### 环境变量
+
+| 变量 | 说明 | 默认 |
+|---|---|---|
+| `ARIA2_URLS` | 下载目标（换行/逗号分隔），优先于 `urls.txt` | 空 |
+| `ARIA2_BIN` | aria2c 可执行文件路径；不设则 PATH > bin/ 缓存 > 自动下载静态编译版 | 空 |
+| `ARIA2_VERSION` | 要使用的静态编译 release 版本 tag（如 `v1.37.0`） | `latest` |
+| `ARIA2_OUTPUT_DIR` | 输出目录，相对路径基于工具目录解析 | `downloads` |
+| `ARIA2_SAVE_NAME` | 输出文件名（不含扩展名）；多 URL 自动加序号 | 空 |
+| `ARIA2_OVERWRITE` | 覆盖目标文件（`1`/`true`/`yes`/`on`）：强制重新下载；不置=目标文件已存在则跳过 | 关 |
+| `ARIA2_CONNECTIONS` | 单服务器最大连接数 `-x`（上限 16） | `16` |
+| `ARIA2_SPLIT` | 单文件分片数 `-s` | `16` |
+| `ARIA2_MIN_SPLIT_SIZE` | 分片最小尺寸 `-k` | `1M` |
+| `ARIA2_MAX_TRIES` | 每连接重试次数 | `5` |
+| `ARIA2_RETRY_WAIT` | 重试间隔秒数 | `5` |
+| `ARIA2_COOKIES` | Netscape cookies 文件路径（`--load-cookies`） | 空 |
+| `ARIA2_HEADERS` | 自定义请求头：JSON 对象（推荐）或每行 `Name: Value`；**不允许 Cookie 头**（报错指路 `ARIA2_COOKIES`）；格式错误退出码 2 | 空 |
+| `ARIA2_EXTRA_ARGS` | aria2c 附加命令行参数（空格分隔，原样透传） | 空 |
+| `ARIA2_VERBOSE` | 置 1 输出 aria2c DEBUG 日志 | 空 |
+| `ARIA2_HF_UPLOAD` | 启用上传到 Hugging Face datasets（`1`/`true`/`yes`/`on`） | 关 |
+| `ARIA2_HF_REPO` | HF dataset 仓库 ID（`用户名/数据集名`） | 空 |
+| `ARIA2_HF_PRIVATE` | 创建仓库时是否私有 | `1`（私有） |
+| `ARIA2_HF_PATH` | 上传到数据集仓库内的子目录，留空 = 根路径 | 空 |
+| `ARIA2_HF_TOKEN` | Hugging Face 令牌（带工具前缀 `ARIA2_`，避免多工具 token 混用） | 空 |
+
+### 本地运行
+
+```bash
+pip install -r tools/aria2/requirements.txt   # 仅 huggingface_hub；二进制自动下载
+
+# 用 urls.txt（脚本自定位，任意目录运行均可；无 aria2c 时首次运行自动下载到 tools/aria2/bin/）
+python tools/aria2/download.py
+
+# 命令行直接传 URL
+python tools/aria2/download.py "https://example.com/video.mp4"
+
+# 指定输出文件名
+ARIA2_SAVE_NAME=myvideo python tools/aria2/download.py "https://example.com/video.mp4"
+
+# 自定义连接数与分片
+ARIA2_CONNECTIONS=16 ARIA2_SPLIT=32 python tools/aria2/download.py
+
+# 自定义请求头（JSON；也支持每行 Name: Value，值不会打进日志）
+ARIA2_HEADERS='{"Referer":"https://example.com/","User-Agent":"Mozilla/5.0"}' \
+  python tools/aria2/download.py "https://example.com/video.mp4"
+
+# 附加参数透传：走代理 + 慢速熔断
+ARIA2_EXTRA_ARGS="--all-proxy http://127.0.0.1:7890 --lowest-speed-limit 1M" \
+  python tools/aria2/download.py "https://example.com/big.zip"
+
+# 下载并上传到 Hugging Face datasets 的指定子目录（需 ARIA2_HF_TOKEN 或本机 hf auth login）
+ARIA2_HF_UPLOAD=1 ARIA2_HF_REPO=myuser/my-files ARIA2_HF_PATH=files/2024 python tools/aria2/download.py
+```
+
+### cookies（可选）
+
+需要登录态的站点：把 Netscape 格式 cookies.txt base64 后存为仓库 Secret `ARIA2_COOKIES`，workflow 会自动解码并传给 aria2c（`--load-cookies`）。生成方式：
+
+```bash
+base64 -w0 cookies.txt
+```
+
+### 覆盖与跳过（overwrite）
+
+| 勾选状态 | 行为 |
+|---|---|
+| 不勾选（默认） | 下载前检查目标文件（`save_name`/URL 派生名 + mp4/mkv/ts/zip 等常见后缀）：已存在 → 跳过不下载；不存在 → 下载 |
+| 勾选 | 强制重新下载：先删除已存在的同名产物（各扩展名都清）与 `.aria2` 断点控制文件，下载完成直接覆盖 |
+
+### 注意事项
+
+- **只支持直链**：aria2 不解析网页、不合并 HLS/DASH 分片；`.m3u8`/`.mpd` 会下到播放列表文本本身。流处理需求用 m3u8 / ytdlp 工具。
+- **多连接不是万能**：部分站点/CDN 拒绝 range 请求或单 IP 限并发，多连接可能被 403/429，此时调小 `connections`/`split`。
+- **Cookie 限制**：aria2 明确禁止用 `--header` 设置 Cookie 头，脚本会在启动前拦截并指路 `ARIA2_COOKIES`，避免跑到一半才失败。
+- **断点续传**：默认 `--continue` 开启；非覆盖模式下重跑同一 URL 前先检查目标文件，已下载完的会跳过，未下载完的（有 `.aria2` 控制文件）续传。
+- **二进制来源**：本地/CI 无 aria2c 时自动下载 [abcfy2/aria2-static-build](https://github.com/abcfy2/aria2-static-build) 静态编译版（linux/win；macOS 请 `brew install aria2` 或用 `ARIA2_BIN` 指定）。
+- **产物留存**：与 ytdlp / m3u8 相同，不上传 GitHub Artifact（限额原因）；需要文件就启用 `hf_upload` 传到 HF datasets，或本地运行。
+- **超时**：job `timeout-minutes: 360` 为 GitHub 托管 runner 上限，特大任务需拆分。
 
 ## ytdlp 工具说明
 

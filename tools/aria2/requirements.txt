@@ -1,0 +1,3 @@
+# aria2c 二进制不走 pip，由 download.py 按需自动下载（abcfy2/aria2-static-build 静态编译版）
+# 本文件仅装纯 Python 依赖；保留文件维持 workflow 骨架一致
+huggingface_hub

@@ -1,0 +1,9 @@
+# aria2 下载目标清单
+# 每行一个直链 URL（完整文件，如 mp4/mkv/ts/zip/apk）；"#" 开头为注释；空行忽略。
+# 注意：aria2 不解析网页、不合并 HLS/DASH 分片——填 .m3u8/.mpd 只会下到播放
+# 列表文本本身；流处理需求请用 m3u8 / ytdlp 工具。
+# 在 Actions 页面手动触发时传入 urls 参数，则优先使用参数、忽略本文件。
+#
+# 示例（取消注释即可测试）：
+# https://example.com/video/video.mp4
+# https://example.com/files/archive.zip
