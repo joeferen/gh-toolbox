@@ -1,6 +1,6 @@
 # gh-toolbox
 
-GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 Python 脚本控制一个 CLI 工具，由独立 workflow 调度（手动输入 / 定时 / 文件变更触发），产物按工具需要留存（ytdlp / m3u8 走 HF datasets 上传，青龙面板走 Artifact）。yt-dlp 是第一个入驻的批处理工具，青龙面板是第一个入驻的服务型工具（长驻进程 + 隧道暴露），N_m3u8DL-RE 是第二个批处理工具（专攻 HLS/DASH 流下载），后续可继续添加。
+GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 Python 脚本控制一个 CLI 工具，由独立 workflow 调度（手动输入 / 定时 / 文件变更触发），产物按工具需要留存（ytdlp / m3u8 走 HF datasets 上传，青龙面板走 Artifact）。yt-dlp 是第一个入驻的批处理工具，青龙面板是第一个入驻的服务型工具（长驻进程 + 隧道暴露），N_m3u8DL-RE 是第二个批处理工具（专攻 HLS/DASH 流下载），后续可继续添加。例外：`one` 是纯浏览器侧的油猴脚本（详情取数器），没有 Python 入口也不挂 workflow。
 
 ## 工具列表
 
@@ -10,6 +10,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `m3u8` | N_m3u8DL-RE 下载 HLS(m3u8)/DASH(mpd) 流 | `.github/workflows/m3u8.yml` | `tools/m3u8/download.py` |
 | `aria2` | aria2c 多连接加速下载直链文件 | `.github/workflows/aria2.yml` | `tools/aria2/download.py` |
 | `qinglong` | 托管青龙面板，控制端口经 CF Tunnel 映射访问 | `.github/workflows/qinglong.yml` | `tools/qinglong/run_panel.py` |
+| `one` | 「ONE/暮色」网页版(j7tu.com)详情页取数器：拦页面自己发出的 detail 请求还原文章 id，换 one 模块 token 重取详情并铺出 MP4/M3U8 完整链接 | 无（纯浏览器侧油猴脚本，不走 Actions） | `tools/one/one-detail-fetcher.user.js` |
 
 ## 通用约定
 
@@ -41,12 +42,14 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 │   │   ├── urls.txt               # 输入清单（直链文件 URL）
 │   │   ├── bin/                   # aria2c 静态编译二进制缓存（gitignore，按需自动下载）
 │   │   └── downloads/             # 输出目录（gitignore；留存靠 HF 上传或本地运行）
-│   └── qinglong/
-│       ├── run_panel.py           # 主脚本（入口）：起面板 + CF Tunnel + 保活
-│       ├── requirements.txt       # 无第三方依赖（仅标准库）
-│       ├── data/                  # 青龙数据卷（gitignore，走 Artifact）
-│       ├── bin/                   # cloudflared 二进制（gitignore，按需下载）
-│       └── cloudflared.log        # cloudflared 日志（gitignore，含隧道地址）
+│   ├── qinglong/
+│   │   ├── run_panel.py           # 主脚本（入口）：起面板 + CF Tunnel + 保活
+│   │   ├── requirements.txt       # 无第三方依赖（仅标准库）
+│   │   ├── data/                  # 青龙数据卷（gitignore，走 Artifact）
+│   │   ├── bin/                   # cloudflared 二进制（gitignore，按需下载）
+│   │   └── cloudflared.log        # cloudflared 日志（gitignore，含隧道地址）
+│   └── one/
+│       └── one-detail-fetcher.user.js # 油猴脚本：j7tu.com 详情页取数器（纯浏览器侧，无 Python 入口 / 无 workflow）
 └── README.md
 ```
 
@@ -652,3 +655,34 @@ CF_MODE=none RUN_MINUTES=0 python tools/qinglong/run_panel.py
 - **安全**：面板公网可达，初始化后立刻改强密码；不要把 `CF_TUNNEL_TOKEN` 等 Secret 写进任何提交。
 - **镜像拉取**：首次 `docker pull` 可能耗时数分钟，`QL_STARTUP_TIMEOUT`（默认 300s）覆盖的是面板就绪等待，不含拉取时间。
 - **青龙初始化**：首次启动要建库、装内置依赖，耐心等日志出现 `面板就绪`；失败时看 `docker logs`（runner 上）或 workflow 日志中的 `$ docker ...` 记录。
+
+## one 工具说明
+
+「ONE / 暮色」网页版（`https://j7tu.com/#/app`，Flutter Web）的**详情页取数器**油猴脚本（当前 `v2.13.0`）。详情路由是 `#/videoDetail`，文章 id 既不写在 URL 上也不落在 localStorage 里，唯一可靠的来源是 App 自己发出的那次 `POST /v2.5/article/detail` 的请求体（`base64(AES-128-CBC("id=<文章id>&dn=<ts域名>"))`）。脚本在 `document-start` 装上 XHR 钩子，解密请求体还原 id 与 `dn`，记下 App 真正使用的请求头，再用 one 模块 token 重取一次详情，把可点、可选中复制的完整播放链接铺出来。**纯浏览器侧脚本：没有 Python 入口，也不触发 workflow。**
+
+### 安装
+
+1. Tampermonkey / Violentmonkey 新建脚本，把 `tools/one/one-detail-fetcher.user.js` 内容整体粘进去保存（或把文件拖进扩展的「已安装的用户脚本」）。
+2. **`@grant none` 别改**：脚本靠跑在页面主世界才能拦到 App 的请求；改成有 grant 的沙箱形态会退化为「注入回传」，面板会显式说明拦不到。
+3. 打开 `https://j7tu.com/#/app`，右下角出现悬浮球即注入成功（点球展开/收起，球可拖动，位置会被记住）。
+
+### 怎么用
+
+- **进详情页**：在页面里点一张视频卡片，App 自己发 detail，状态条出现 `拦截到 id=… ✓`。
+- **用模块 token 重取**：面板按钮，用当前「身份模式」再取一次同一 id 的详情，结果按 **正片/预告 × MP4/M3U8 四格**铺出；缺哪一格会写清是服务端没给、还是请求体没带 `dn`。
+- **自动替换页面的 token**（⚙ 设置里的复选框，**默认关**）：开启后 App 自己发出的那些请求（详情/评论/点赞/下载…）在离开浏览器前就把 `token/uuid/user-key/sign/ip` 五个头一起换成所选身份，页面本身直接看到替换后的结果，不用再点按钮；关掉立刻原样放行。开关会被记住，下次进页面自动读回并重新挂载。`/purchase` `/buy` `/pay` `/coin` `/recharge` `/order` `/vip` `/sign_in` **永不替换**。
+- **看拦截 / 诊断 / 复制 JSON**：分别回显拦到的原始请求与响应、钩子装在哪个世界（以及拦不到的原因）、把上一次解密出的 JSON 复制到剪贴板。
+
+### 域名与字段（脚本按此拼链接）
+
+- **MP4**：`detail.video_file` / `preview_video` 是根相对路径，必须拼**媒体域名池**（`domain.video`，如 `https://z4bey8.bx7qxb.com`）才 206；拼到请求体里的 `dn`（ts 域）上会 404。播放域名可在 ⚙ 里手填，留空则先取页面自己正在播的那次请求的域，再退种子。
+- **M3U8**：`video_hls` 是 `/api/video/getM3u8.m3u8?params=<hex>`，要拼 **api 域**；`params` 每次 detail 重新生成且很快失效，必须取完立刻用。请求体**不带 `dn` 时服务端只回 MP4**，`dn` 还会被原样回显进清单里的 `*.ts` 分片域名。
+- **清单只有一个槽位**：接口没有「预告清单」字段，`video_hls` 跟着 `video_file` 走 —— 解锁态装的是正片清单，锁定态装的就是预告清单。所以四格里「预告 · M3U8」永远为空，不是脚本漏了。
+- **身份决定裁到哪一刀**：同一 id 用网页账号可能是锁定态（`video_file === preview_video`），用 one 模块 token 是解锁态；`size` 是服务端元数据，两种状态下都一样，不能拿来判断有没有拿到正片。
+
+### 注意事项
+
+- 只匹配 `j7tu.com`（`@noframes`），只做「拦请求 + 重取详情 + 打印链接」，**不下载付费媒体、不调用购买/扣币接口**。
+- 内置的 one 模块 token 带 `exp`，到期后在 ⚙ 的「模块 token」框里粘新的（会覆盖内置值并被记住）。
+- 改过脚本要**刷新页面**再测：同一文档里留两层钩子时，状态条会显示 `⚠页面里有 N 层钩子`。
+- 面板里所有链接都是 `target=_blank` + `rel=noopener noreferrer`，且整行文字可选中复制；服务端字段里的尖括号只当文字处理，不拼 innerHTML。
