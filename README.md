@@ -665,7 +665,7 @@ CF_MODE=none RUN_MINUTES=0 python tools/qinglong/run_panel.py
 1. Tampermonkey / Violentmonkey 新建脚本，把 `tools/one/one-detail-fetcher.user.js` 内容整体粘进去保存（或把文件拖进扩展的「已安装的用户脚本」）。
 2. **`@grant none` 别改**：脚本靠跑在页面主世界才能拦到 App 的请求；改成有 grant 的沙箱形态会退化为「注入回传」，面板会显式说明拦不到。
 3. 打开 `https://j7tu.com/#/app`，右下角出现悬浮球即注入成功（点球展开/收起，球可拖动，位置会被记住）。
-4. 要用 ⬇ 下载才需要这一步：⚙ 最下面那组 GitHub 字段里粘一个 token（**fine-grained，只授权目标仓库、只给 Actions: write**），仓库/分支留默认即可（`smanx/gh-toolbox` / `main`）。只取链接不下载就什么都不用填——没 token 时 ⬇ 连单子都不铺，只提示一句「去 ⚙ 填」，一个请求都不发。
+4. 要用 ⬇ 下载才需要这一步：⚙ 最下面那组 GitHub 字段里粘一个 token（**fine-grained，只授权目标仓库、只给 Actions: write**），仓库/分支留默认即可（`owner/gh-toolbox` / `main`）。只取链接不下载就什么都不用填——没 token 时 ⬇ 连单子都不铺，只提示一句「去 ⚙ 填」，一个请求都不发。
 5. 要用「☁ 传到 HF」那一勾，得先在**目标仓库**配 Secret：`ARIA2_HF_TOKEN` / `M3U8_HF_TOKEN`（HF 的 read+write dataset 权限），可选 `ARIA2_HF_REPO` / `M3U8_HF_REPO` 当默认数据集。脚本这边只填「传到哪个仓库、哪个目录」，**不经手 HF token**。
 
 ### 怎么用
@@ -689,7 +689,7 @@ CF_MODE=none RUN_MINUTES=0 python tools/qinglong/run_panel.py
 - **`@grant none` 的代价**：没有 `GM_xmlhttpRequest`，这一发 POST 是**用页面自己的 fetch 从 `j7tu.com` 这个源跨域打到 `api.github.com`**（OPTIONS 预检 + 响应都要过，GitHub 回 `Access-Control-Allow-Origin: *`，实测通）。Token 也因此存在 j7tu.com 的 localStorage 里，**请只用「只授权这一个仓库 + Actions: write」的 fine-grained token**，别拿账号级 PAT。
 - **M3U8 那条会过期**：`params` 是这次详情临时生成的，runner 排队+启动要几十秒到几分钟；面板会打印这条详情距今多少秒，过期就重新取一次详情再点 ⬇。
 - **失败都有名字**：401（token 无效/过期/没 Actions 权限）、403（私有仓库没覆盖到 / 防滥用限制）、404（token 看不到这个仓库，或 owner/repo、workflow 文件名写错）、422（该分支上的 yml 没声明这次发的 inputs），`action_required` 会提示去 Actions 页面点 Run job（私有仓库额度用完会卡在这）。
-- **仓库写法**：⚙ 的「仓库」框粘 `https://github.com/owner/repo.git`、`git@github.com:owner/repo.git` 或 `owner/repo` 都认，会被归一化成 `owner/repo` 再存；写坏了自动退回默认 `smanx/gh-toolbox`。
+- **仓库写法**：⚙ 的「仓库」框粘 `https://github.com/owner/repo.git`、`git@github.com:owner/repo.git` 或 `owner/repo` 都认，会被归一化成 `owner/repo` 再存；写坏了自动退回默认 `owner/gh-toolbox`。
 
 ### 域名与字段（脚本按此拼链接）
 

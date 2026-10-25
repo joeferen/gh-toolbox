@@ -899,7 +899,7 @@
      mux_format）—— 多一个没声明的 key 就是 HTTP 422 "Unexpected inputs"，其余参数一律用 yml 默认值。 */
   var GH_API = "https://api.github.com";
   var GH_WF = { MP4: "aria2.yml", M3U8: "m3u8.yml" };
-  var GH_REPO = "smanx/gh-toolbox";
+  var GH_REPO = "owner/gh-toolbox";
   var GH_REF = "main";
   var GH_FIND_MS = 60000;      // dispatches 只回 204，runner 起来前列表里没有这条运行，最多等这么久
   var GH_RUN_MS = 600000;      // 单个下载的轮询上限（runner 排队 + 下载常常要几分钟）
@@ -1847,7 +1847,7 @@
         '<label>指定 api 域（留空=自动，优先用拦截到的域，再退 localStorage.current_domain 与种子池）<input name="host" placeholder="https://api.61c76a0.com"></label>' +
         '<label>播放域名（留空=自动：先取页面自己正在播的那次请求的域，再退媒体池种子。它和请求体里的 ts 域名 dn 不是一回事）<input name="play" placeholder="https://z4bey8.bx7qxb.com"></label>' +
         '<div class="dim" style="margin-top:8px">GitHub 下载（⬇ 那个按钮先在面板里铺一张单子：选哪条链接、文件名、请求头、要不要传 HF，确认后才投给本仓库的 Actions：MP4→aria2.yml，M3U8→m3u8.yml。下面这几项是那张单子的默认值）</div>' +
-        '<label>仓库 owner/repo<input name="gh_repo" placeholder="smanx/gh-toolbox"></label>' +
+        '<label>仓库 owner/repo<input name="gh_repo" placeholder="owner/gh-toolbox"></label>' +
         '<label>分支 ref<input name="gh_ref" placeholder="main"></label>' +
         '<label>下载格式（单子里默认选中哪一条）<select name="gh_fmt">' +
           '<option value="auto">自动：有 MP4 用 MP4（aria2），没有才用 M3U8（m3u8）</option>' +
