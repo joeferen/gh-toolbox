@@ -2,8 +2,7 @@
 // @name         gh-toolbox m3u8 一键触发器
 // @namespace    https://gh-toolbox/m3u8
 // @version      1.2.0
-// @description  在 gh-toolbox 仓库页面或 jable.tv / pornhub / missav（.ai/.ws/.com 等镜像域）视频页显示悬浮按钮，弹框内分「GitHub Action 触发」「通过 aria2 下载」「发送到 MediaGo」三个 tab：一键触发「N_m3u8DL-RE 下载器」workflow_dispatch，或把视频直链直接添加到本地/局域网 aria2 / MediaGo（m3u8 会先弹画质列表，确认后才发送）；自动提取视频直链与标题，并轮询展示运行/下载状态。
-// @match        https://github.com/*/gh-toolbox*
+// @description  在  jable.tv / pornhub / missav（.ai/.ws/.com 等镜像域）视频页显示悬浮按钮，弹框内分「GitHub Action 触发」「通过 aria2 下载」「发送到 MediaGo」三个 tab：一键触发「N_m3u8DL-RE 下载器」workflow_dispatch，或把视频直链直接添加到本地/局域网 aria2 / MediaGo（m3u8 会先弹画质列表，确认后才发送）；自动提取视频直链与标题，并轮询展示运行/下载状态。
 // @match        https://*.missav.ai/*
 // @match        https://*.missav.ws/*
 // @match        https://*.missav.com/*
