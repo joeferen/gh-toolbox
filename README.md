@@ -1,6 +1,6 @@
 # gh-toolbox
 
-GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 Python 脚本控制一个 CLI 工具，由独立 workflow 调度（手动输入 / 定时 / 文件变更触发），产物按工具需要留存（ytdlp / m3u8 走 HF datasets 上传，青龙面板走 Artifact）。yt-dlp 是第一个入驻的批处理工具，青龙面板是第一个入驻的服务型工具（长驻进程 + 隧道暴露），N_m3u8DL-RE 是第二个批处理工具（专攻 HLS/DASH 流下载），后续可继续添加。例外：`one` 是纯浏览器侧的油猴脚本（详情取数器），没有 Python 入口也不挂 workflow。
+GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 Python 脚本控制一个 CLI 工具，由独立 workflow 调度（手动输入 / 定时 / 文件变更触发），产物按工具需要留存（ytdlp / m3u8 走 HF datasets 上传，青龙面板走 Artifact）。yt-dlp 是第一个入驻的批处理工具，青龙面板是第一个入驻的服务型工具（长驻进程 + 隧道暴露），N_m3u8DL-RE 是第二个批处理工具（专攻 HLS/DASH 流下载），后续可继续添加。例外：`one` 是跑在浏览器里的油猴脚本（详情取数器），没有 Python 入口也不挂自己的 workflow，但它能把取到的链接一键投给 `aria2.yml` / `m3u8.yml` 去下载。
 
 ## 工具列表
 
@@ -10,7 +10,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 | `m3u8` | N_m3u8DL-RE 下载 HLS(m3u8)/DASH(mpd) 流 | `.github/workflows/m3u8.yml` | `tools/m3u8/download.py` |
 | `aria2` | aria2c 多连接加速下载直链文件 | `.github/workflows/aria2.yml` | `tools/aria2/download.py` |
 | `qinglong` | 托管青龙面板，控制端口经 CF Tunnel 映射访问 | `.github/workflows/qinglong.yml` | `tools/qinglong/run_panel.py` |
-| `one` | 「ONE/暮色」网页版(j7tu.com)详情页取数器：拦页面自己发出的 detail 请求还原文章 id，换 one 模块 token 重取详情并铺出 MP4/M3U8 完整链接 | 无（纯浏览器侧油猴脚本，不走 Actions） | `tools/one/one-detail-fetcher.user.js` |
+| `one` | 「ONE/暮色」网页版(j7tu.com)详情页取数器：拦页面自己发出的 detail 请求还原文章 id，换 one 模块 token 重取详情并铺出 MP4/M3U8 完整链接，点 ⬇ 填一张单子（选哪条链接、文件名、headers、M3U8 要不要转 MP4、勾一下就顺带传到 HF 数据集）再投给本仓库的 workflow 下载 | 无（脚本自己不挂 workflow；面板 ⬇ 触发 `aria2.yml` / `m3u8.yml`） | `tools/one/one-detail-fetcher.user.js` |
 
 ## 通用约定
 
@@ -49,7 +49,7 @@ GitHub Actions 驱动的工具箱：仓库下每个工具 = 一个自包含的 P
 │   │   ├── bin/                   # cloudflared 二进制（gitignore，按需下载）
 │   │   └── cloudflared.log        # cloudflared 日志（gitignore，含隧道地址）
 │   └── one/
-│       └── one-detail-fetcher.user.js # 油猴脚本：j7tu.com 详情页取数器（纯浏览器侧，无 Python 入口 / 无 workflow）
+│       └── one-detail-fetcher.user.js # 油猴脚本：j7tu.com 详情页取数器（无 Python 入口；⬇ 可触发 aria2.yml / m3u8.yml）
 └── README.md
 ```
 
@@ -270,7 +270,7 @@ MediaGo tab 还提供：服务地址/API Key 填写（按 host 记忆，Docker �
 | 输入 | 类型 | 说明 | 默认 |
 |---|---|---|---|
 | `urls` | string | 下载目标，每行一个（直链文件 URL）；留空用 `urls.txt` | 空 |
-| `save_name` | string | 输出文件名（不含扩展名，如 `myvideo`）；留空按 URL 自动派生（取路径尾段 + 查询串指纹）；多个 URL 时自动加序号（`myvideo-2.mp4`）避免覆盖 | 空 |
+| `save_name` | string | 输出文件名，**原样传给 `aria2c -o`**（不像 m3u8 那条由工具补后缀）：直链文件建议带扩展名（如 `myvideo.mp4`），不带就落一个没扩展名的文件；留空按 URL 自动派生（取路径尾段 + 查询串指纹，派生名保留原后缀）。多个 URL 时手动名自动加序号（`myvideo-2`，拼在给定名字后面、不补后缀）避免覆盖 | 空 |
 | `overwrite` | boolean | 是否覆盖目标文件：勾选=**强制重新下载**并删除已存在的同名文件；不勾选=目标文件已存在则**跳过、不下载** | `false` |
 | `connections` | string | 单服务器最大连接数 `-x`（aria2 协议上限 16）；服务器单连接限速时调大 | `16` |
 | `split` | string | 单文件分片数 `-s` | `16` |
@@ -658,13 +658,15 @@ CF_MODE=none RUN_MINUTES=0 python tools/qinglong/run_panel.py
 
 ## one 工具说明
 
-「ONE / 暮色」网页版（`https://j7tu.com/#/app`，Flutter Web）的**详情页取数器**油猴脚本（当前 `v2.13.0`）。详情路由是 `#/videoDetail`，文章 id 既不写在 URL 上也不落在 localStorage 里，唯一可靠的来源是 App 自己发出的那次 `POST /v2.5/article/detail` 的请求体（`base64(AES-128-CBC("id=<文章id>&dn=<ts域名>"))`）。脚本在 `document-start` 装上 XHR 钩子，解密请求体还原 id 与 `dn`，记下 App 真正使用的请求头，再用 one 模块 token 重取一次详情，把可点、可选中复制的完整播放链接铺出来。**纯浏览器侧脚本：没有 Python 入口，也不触发 workflow。**
+「ONE / 暮色」网页版（`https://j7tu.com/#/app`，Flutter Web）的**详情页取数器**油猴脚本（当前 `v2.17.0`）。详情路由是 `#/videoDetail`，文章 id 既不写在 URL 上也不落在 localStorage 里，唯一可靠的来源是 App 自己发出的那次 `POST /v2.5/article/detail` 的请求体（`base64(AES-128-CBC("id=<文章id>&dn=<ts域名>"))`）。脚本在 `document-start` 装上 XHR 钩子，解密请求体还原 id 与 `dn`，记下 App 真正使用的请求头，再用 one 模块 token 重取一次详情，把可点、可选中复制的完整播放链接铺出来；拿到链接后点 ⬇ 会**先铺一张单子**（选哪条链接、文件名、请求头，M3U8 还问要不要转成 MP4，勾一下就顺带把产物传到 Hugging Face 数据集、上传目录可以直接在单子上改），确认了才投给本仓库的 Actions（MP4→`aria2.yml`，M3U8→`m3u8.yml`）。脚本自己没有 Python 入口，也不常驻任何 workflow——下载是你点 ⬇ 再点「✓ 确认触发」才发生的一次手动触发。
 
 ### 安装
 
 1. Tampermonkey / Violentmonkey 新建脚本，把 `tools/one/one-detail-fetcher.user.js` 内容整体粘进去保存（或把文件拖进扩展的「已安装的用户脚本」）。
 2. **`@grant none` 别改**：脚本靠跑在页面主世界才能拦到 App 的请求；改成有 grant 的沙箱形态会退化为「注入回传」，面板会显式说明拦不到。
 3. 打开 `https://j7tu.com/#/app`，右下角出现悬浮球即注入成功（点球展开/收起，球可拖动，位置会被记住）。
+4. 要用 ⬇ 下载才需要这一步：⚙ 最下面那组 GitHub 字段里粘一个 token（**fine-grained，只授权目标仓库、只给 Actions: write**），仓库/分支留默认即可（`smanx/gh-toolbox` / `main`）。只取链接不下载就什么都不用填——没 token 时 ⬇ 连单子都不铺，只提示一句「去 ⚙ 填」，一个请求都不发。
+5. 要用「☁ 传到 HF」那一勾，得先在**目标仓库**配 Secret：`ARIA2_HF_TOKEN` / `M3U8_HF_TOKEN`（HF 的 read+write dataset 权限），可选 `ARIA2_HF_REPO` / `M3U8_HF_REPO` 当默认数据集。脚本这边只填「传到哪个仓库、哪个目录」，**不经手 HF token**。
 
 ### 怎么用
 
@@ -672,6 +674,22 @@ CF_MODE=none RUN_MINUTES=0 python tools/qinglong/run_panel.py
 - **用模块 token 重取**：面板按钮，用当前「身份模式」再取一次同一 id 的详情，结果按 **正片/预告 × MP4/M3U8 四格**铺出；缺哪一格会写清是服务端没给、还是请求体没带 `dn`。
 - **自动替换页面的 token**（⚙ 设置里的复选框，**默认关**）：开启后 App 自己发出的那些请求（详情/评论/点赞/下载…）在离开浏览器前就把 `token/uuid/user-key/sign/ip` 五个头一起换成所选身份，页面本身直接看到替换后的结果，不用再点按钮；关掉立刻原样放行。开关会被记住，下次进页面自动读回并重新挂载。`/purchase` `/buy` `/pay` `/coin` `/recharge` `/order` `/vip` `/sign_in` **永不替换**。
 - **看拦截 / 诊断 / 复制 JSON**：分别回显拦到的原始请求与响应、钩子装在哪个世界（以及拦不到的原因）、把上一次解密出的 JSON 复制到剪贴板。
+- **⬇ 发到 GitHub 下载**：点一下先在面板里铺出**一张只对本次有效的单子**——① 每条可下载链接一个单选（`正片 MP4 → aria2.yml（域名）` / `正片 M3U8 → m3u8.yml（域名）` / `预告 MP4 → …`，默认选中 ⚙「下载格式」那条）；② `文件名 save_name`；③ 选了 M3U8 才露出「转成 MP4（mux_format=mp4）」复选框，**默认勾着**，不勾就是 `none`（产出分轨原文件，不合成）；④「☁ 传到 HF（hf_upload）」复选框 + 一栏**可改的上传目录 `hf_path`**（勾了才传，目录就是数据集仓库里的子目录，留空=根路径）；⑤ `请求头 headers`（**开单子时就把 `User-Agent` 与来源 `Referer` 写在这栏里**，再加上 ⚙ 里那条额外的，所以栏里看到的这一串就是最终发出去的那一份：改哪条发哪条，删掉哪条就不带哪条，整栏清空就是这次不带自定义头）。改完点「✓ 确认触发」才发，点「取消」一个字都不发。面板随后逐行回显：用的哪份详情、这次可选哪几条、选了哪条（写明是「面板上选的」还是「格式设置：auto」）、`POST owner/repo / workflow ref=分支`、发出去的 `urls` / `save_name` / `mux_format` / `headers` / `hf_upload`，然后是 204、认出的那次运行（带可点链接）、每 5 秒刷一次的状态，直到 success/失败。
+- **⚙ 里那组 GitHub / HF 字段 = 单子的默认值**：仓库、分支、下载格式（决定单子里默认选中哪一条）、GitHub token、额外请求头（**这里只存你额外要带的那几条**，`User-Agent` 与来源不落盘——落盘了就是一份迟早过期的 UA，理由见下条），加上 Hugging Face 三项——数据集仓库 ID（`owner/name`，直接粘 `https://huggingface.co/datasets/...` 也认；留空=用仓库 Secret 兜底）、上传目录默认值、以及「默认勾上 ☁ 传到 HF」。那两个勾和目录与单子写回的是同一批键（`one_gh_hf` / `one_gh_hf_path` / `one_gh_mux`），所以在单子上改过一次，⚙ 里下次打开看到的就是它，两边不会各存一份对不上。
+
+### ⬇ 下载触发的细节
+
+- **只发 workflow 声明过的 input**：`m3u8.yml` / `aria2.yml` 的 `inputs:` 里没写的 key 一律不发——多写一个 key GitHub 会整个 422（`Unexpected input`）。脚本发 `urls` + `save_name` + `headers`（后者的值见下条），**选了 M3U8 才多带 `mux_format`**（`aria2.yml` 没有这个 key，MP4 那条带上就是 422），勾了「传到 HF」才多带 `hf_upload` / `hf_repo` / `hf_path`（这三条两个 yml 都声明过，投给哪条都收得下），其余参数留在 workflow 的默认值上。
+- **请求头：UA 与来源是铺进那一栏给你看的，不是后台默默补**（`v2.17` 改的就是这一点）。开单子时脚本先把两条写进 `headers` 输入框——`User-Agent` 取当前页面 `navigator.userAgent` 那一串，`Referer` 取本站 origin（`https://j7tu.com/`；详情页的 `#/videoDetail` 路由对服务器没有意义，所以不带上）——再把 ⚙ 里那条额外的并进去（同名以 ⚙ 为准），⚙ 里那栏底下会同一时刻印出「单子里那一栏会铺成：{…}」，两处逐字相同。随后**栏里是什么就发什么**：改一条发一条，删掉 `User-Agent` 那条就真的不带它，整栏清空就是这次不带任何自定义头（面板会另起一行点破：媒体域对没有 UA/来源的直连常会拒绝）。只有栏里写成了「不是 JSON 对象」的东西才退回自动那两条，而面板会改口写明这次是退回而不是照栏子发。头名大小写不敏感（`ua` / `referer` 也归一化成 `User-Agent` / `Referer`），显式写成空串等于「这条不要」。⚙ 之所以只存额外那几条、不把这两条一起存：这个脚本是 `@grant none`，设置落在 j7tu.com 的 localStorage 里，UA 一旦落盘，浏览器升级后发出去的就是过期那串。最终那一串 JSON 原样进 `inputs.headers`，两个 `download.py` 的 `parse_headers` 都吃 JSON 对象。
+- **文件名的后缀规则两边相反**（这是最容易想当然的一处，脚本按两个 `download.py` 的实现各自处理）：`aria2.yml` 是 `aria2c -o <save_name>` 原样落盘，不给扩展名就得到一个没扩展名的文件 → **MP4 那条自动补 `.mp4`**（单子上自己写了 `.mkv` 就尊重你写的）；`m3u8.yml` 的 `--save-name` 反过来**不能带后缀**，N_m3u8DL-RE 按 `mux_format` 自己补，传 `x.mp4` 会落成 `x.mp4.mp4` → M3U8 那条在发出去前把后缀剥掉。单子上改选另一条格式时，输入框里的名字会当场按新规则重排（你手打过的部分保留，只动后缀）。默认名取详情标题（去掉非法文件名字符），预告那条再加「 预告」。
+- **「转成 MP4」「传到 HF」和那一栏上传目录会被记住**：分别存进 `one_gh_mux`、`one_gh_hf`、`one_gh_hf_path`（`1`/`0` + 目录原文），下次开单子、刷新页面都读回来；⚙ 里那组 HF 字段就是这三个键的编辑入口（也是单子的默认值），两边共用同一个键、不会打架。单子上其余两项（选哪条链接、文件名）每次重新铺默认值，故意不记——记着上一次的容易把预告当正片发出去。没点「✓ 确认触发」而点「取消」时，一个字都不写回。
+- **传到 Hugging Face 的那一步**：勾了单子上的「☁ 传到 HF」才发 `hf_upload=true`，产物由 workflow 用 `HfApi` 按 **dataset 仓库**上传（`upload_folder`），落到 `hf_path` 指的那个仓库内子目录（留空=根）。**HF 的 token 不经过脚本**：只从目标仓库的 Secret 读 `ARIA2_HF_TOKEN` / `M3U8_HF_TOKEN`；`hf_repo` 留空时退到 Secret `ARIA2_HF_REPO` / `M3U8_HF_REPO`，两边都没有就是「记下失败并跳过上传」（下载本身不受影响）。仓库不存在时服务端按 `private` 建（由 Secret `<tool>_HF_PRIVATE` 决定，默认 `true`），已存在的仓库不会被脚本改可见性。
+- **`urls` 只放一条裸链接**：两个 workflow 的 `parse_urls` 都按换行分割、逗号也算分隔符，所以清单里不能出现空格/逗号/多条（M3U8 那条 `params` 里本身没有逗号，MP4 直链也没有）。
+- **204 不返回运行 id**：dispatch 成功只给 204，脚本改从 `…/runs?per_page=5&event=workflow_dispatch` 里按 `created_at >= 触发时刻-30s` 认那一次，认不到就明说（避免把一小时前的旧运行当成刚触发的）。轮询期间再点 ⬇ 会作废上一次轮询。
+- **`@grant none` 的代价**：没有 `GM_xmlhttpRequest`，这一发 POST 是**用页面自己的 fetch 从 `j7tu.com` 这个源跨域打到 `api.github.com`**（OPTIONS 预检 + 响应都要过，GitHub 回 `Access-Control-Allow-Origin: *`，实测通）。Token 也因此存在 j7tu.com 的 localStorage 里，**请只用「只授权这一个仓库 + Actions: write」的 fine-grained token**，别拿账号级 PAT。
+- **M3U8 那条会过期**：`params` 是这次详情临时生成的，runner 排队+启动要几十秒到几分钟；面板会打印这条详情距今多少秒，过期就重新取一次详情再点 ⬇。
+- **失败都有名字**：401（token 无效/过期/没 Actions 权限）、403（私有仓库没覆盖到 / 防滥用限制）、404（token 看不到这个仓库，或 owner/repo、workflow 文件名写错）、422（该分支上的 yml 没声明这次发的 inputs），`action_required` 会提示去 Actions 页面点 Run job（私有仓库额度用完会卡在这）。
+- **仓库写法**：⚙ 的「仓库」框粘 `https://github.com/owner/repo.git`、`git@github.com:owner/repo.git` 或 `owner/repo` 都认，会被归一化成 `owner/repo` 再存；写坏了自动退回默认 `smanx/gh-toolbox`。
 
 ### 域名与字段（脚本按此拼链接）
 
@@ -682,7 +700,7 @@ CF_MODE=none RUN_MINUTES=0 python tools/qinglong/run_panel.py
 
 ### 注意事项
 
-- 只匹配 `j7tu.com`（`@noframes`），只做「拦请求 + 重取详情 + 打印链接」，**不下载付费媒体、不调用购买/扣币接口**。
+- 只匹配 `j7tu.com`（`@noframes`），只做「拦请求 + 重取详情 + 打印链接」，**不调用购买/扣币接口，脚本自己一个字节都不下**；⬇ 只是把链接投给你自己的 workflow——下哪条、叫什么名字、要不要转封装、传不传 HF 数据集、传进哪个目录、带哪些请求头（`headers` 那一栏里写的就是发出去的那份，UA 与来源也是铺在栏里的），都是你在单子上自己填完再点「✓ 确认触发」的，点「取消」不发任何东西、也不改任何被记住的默认值。
 - 内置的 one 模块 token 带 `exp`，到期后在 ⚙ 的「模块 token」框里粘新的（会覆盖内置值并被记住）。
 - 改过脚本要**刷新页面**再测：同一文档里留两层钩子时，状态条会显示 `⚠页面里有 N 层钩子`。
 - 面板里所有链接都是 `target=_blank` + `rel=noopener noreferrer`，且整行文字可选中复制；服务端字段里的尖括号只当文字处理，不拼 innerHTML。

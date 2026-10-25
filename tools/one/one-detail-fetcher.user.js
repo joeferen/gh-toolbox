@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         ONE 详情页 · 模块 token 取数器
 // @namespace    qoder.one.detail.fetcher
-// @version      2.13.0
-// @description  不依赖 URL：拦截页面自己发出的 /v2.5/article/detail（真实传输是 XHR），解密请求体还原文章 id 与 dn，再用 one 模块 token 重取一次详情；按「正片/预告 × MP4/M3U8」四格铺链接（可点、可选中复制），缺哪格就写清为什么缺，并对比两种身份。设置里可开「自动替换页面的 token」（默认关，开关会被记住）：开着时 App 自己发出的请求出门前就换成所选 token，页面直接看到替换身份的结果
+// @version      2.17.0
+// @description  不依赖 URL：拦截页面自己发出的 /v2.5/article/detail（真实传输是 XHR），解密请求体还原文章 id 与 dn，再用 one 模块 token 重取一次详情；按「正片/预告 × MP4/M3U8」四格铺链接（可点、可选中复制），缺哪格就写清为什么缺，并对比两种身份。设置里可开「自动替换页面的 token」（默认关，开关会被记住）：开着时 App 自己发出的请求出门前就换成所选 token，页面直接看到替换身份的结果。拿到链接后点「⬇ 发到 GitHub 下载」先填一张单子（选哪条链接、文件名、请求头——UA 与来源已铺进那一栏、改栏里的字就按改后的发，M3U8 还问要不要转成 MP4，勾一下就把产物自动传到 Hugging Face 数据集、上传目录可改且会被记住），确认后投给本仓库的 Actions：MP4 → aria2.yml，M3U8 → m3u8.yml
 // @match        https://j7tu.com/*
 // @match        http://j7tu.com/*
 // @grant        none
+// @connect      api.github.com
 // @run-at       document-start
 // @noframes
 // ==/UserScript==
@@ -50,6 +51,36 @@
  *     2) 换头失败时必须把扣下的页面原头还回去，并且回一条 replerr 到面板；
  *        静默吞掉的话面板写着「已开」、页面却拿到缺 token 的请求，两头都骗人。
  *   CAP 里存的永远是「页面自己那次」的头，替换出去的身份不反过来污染判读。
+ *
+ * 一键交给 GitHub Actions（v2.14 加触发，v2.15 改成先填单子，v2.16 加抱抱脸上传，v2.17 把 UA/来源铺进那一栏）：
+ *   面板上「⬇ 发到 GitHub 下载」
+ *   先在面板里铺一张一次性表单 —— 下哪一条（正片/预告 × MP4/M3U8）、文件名 save_name、
+ *   请求头 headers（已按当前页面铺好 UA 与来源）、选 M3U8 时多一个「转成 MP4」的勾（默认勾上）、
+ *   一个「☁ 传到 HF」的勾 + 一张可改的「上传目录 hf_path」（默认值在 ⚙，勾和目录都会被记住）——
+ *   点「✓ 确认触发」才真发；这些都是每次可能不一样的东西，所以不进 ⚙，⚙ 只当默认值。
+ *   发出去以后投给本仓库的 workflow：MP4 是直链单文件 → .github/workflows/aria2.yml（多连接分片），
+ *   M3U8 是清单 → .github/workflows/m3u8.yml（N_m3u8DL-RE 拉分片+解密+合成），
+ *   调用方式与 tools/m3u8、tools/ytdlp 那两个 dispatch 脚本一致：
+ *   POST /repos/<owner>/<repo>/actions/workflows/<wf>/dispatches，成功是 204 且没有响应体，
+ *   所以要再去 runs 列表按 created_at 认出自己刚触发的那一次，然后每 5 秒刷状态。
+ *   四个只有这里会踩的点：
+ *     1) inputs 只能发 yml 里声明过的 key（urls/save_name/headers/hf_upload/hf_repo/hf_path 两个 yml 都声明了，
+ *        mux_format 只有 m3u8.yml 认，发给 aria2.yml 就是 HTTP 422 "Unexpected inputs"）；
+ *     2) 文件名两边规则相反：aria2 是 `-o <save_name>` 原样落盘 → MP4 没后缀会自动补 .mp4；
+ *        N_m3u8DL-RE 的 --save-name 不能带后缀（它按 mux_format 补）→ M3U8 发出去前把后缀剥掉；
+ *     3) 默认 @grant none 意味着没有 GM_xmlhttpRequest，只能用页面的 fetch 打 api.github.com
+ *        （它回 Access-Control-Allow-Origin: *，带自定义头的 POST 走 OPTIONS 预检，实测通）；
+ *        正因为请求发在页面这一侧，Token 也存在 j7tu.com 的 localStorage 里，
+ *        所以只该填一个「仅这一个仓库 + Actions: write」的 fine-grained token。
+ *     4) 抱抱脸的 token 绝不进这张单子：两个 workflow 只从仓库 Secret（ARIA2_HF_TOKEN / M3U8_HF_TOKEN）
+ *        读它，脚本这边只发 hf_upload/hf_repo/hf_path 三个非敏感 key；hf_repo 留空就用 Secret 里的
+ *        ARIA2_HF_REPO / M3U8_HF_REPO 兜底，仓库不存在时服务端按 private=true 建（dataset 类型）。
+ *   headers 这边是「下载时」给媒体服务器的请求头。UA（浏览器自己那串）与 Referer（来源 = 本站 origin）
+ *   不是后台偷偷补的：开单子时就把这两条写进 headers 那一栏，栏里是什么就发什么 ——
+ *   删掉一条就不带一条，整栏清空就是这次不带自定义头（面板会为此单独提醒一句，媒体域对空 UA 的直连会限速或拒绝）。
+ *   ⚙ 里那栏只存「额外要带的」，因为 ⚙ 要落 localStorage，把此刻的 UA 存进去迟早过期；
+ *   单子是每次现开的，铺进去的两条永远跟着当前页面。
+ *   M3U8 那条链接里的 params 是按次生成的，runner 排队+启动要几十秒到几分钟，过期就重取详情再触发。
  */
 (function () {
   "use strict";
@@ -70,7 +101,7 @@
      App 只在「从列表点卡片」那一刻发 /v2.5/article/detail；刷新/直开时它一个都不发。
      多盯几个，只要任意一个经过钩子就能还原出 id，拿到 id 后我们自己再发 detail 就行。 */
   var WATCH = [DETAIL, "/v2.5/comment/list", "/v2.5/article/like", "/v2.5/article/download", "/v2.5/panda/url"];
-  var SCRIPT_VERSION = "2.13.0";   // 面板里会打出来，免得再拿旧版截图对新代码
+  var SCRIPT_VERSION = "2.17.0";   // 面板里会打出来，免得再拿旧版截图对新代码
 
   /* one 模块身份：/box/api/splash 下发的共享凭证，iss=4406487，昵称 176*****801。
      它随模块启动由宿主注入，浏览器侧取不到（splash 走 http://ip:6868 且校验 time+uuid 绑定对），
@@ -168,7 +199,7 @@
    * 所以钩子代码要注入成 <script> 在页面主世界执行，抓到密文头/体后用 postMessage
    * 丢回沙箱，由沙箱这边（有 GM_*、有面板）解密并展示。站点没有 CSP，注入可用。 */
   var CAP = { id: null, headers: null, body: null, response: null, route: null, at: 0,
-              dn: null, apiHost: "", playHost: "", playFrom: "" };
+              dn: null, apiHost: "", playHost: "", playFrom: "", resId: null };
   /* 钩子活着与否不能靠「面板没反应」猜：把经过钩子的每一次 App 请求都记一笔，
      面板/诊断里能直接看到「拦到了几个、哪些接口、哪个解出了 id」。 */
   var STAT = { seen: 0, plain: 0, ids: 0, repl: 0, last: [] };
@@ -623,6 +654,7 @@
 
   function clearCapture(reason) {
     CAP.id = null; CAP.headers = null; CAP.body = null; CAP.plain = null; CAP.response = null; CAP.at = 0;
+    CAP.resId = null;   // 「用模块 token 重取」那份跟着一起作废，否则换卡片后 ⬇ 会拿上一篇的链接去触发下载
     emit(reason || "route");
   }
 
@@ -858,6 +890,369 @@
     summarize(d.data, log);
   }
 
+  /* ---------- 下载触发（交给本仓库的 GitHub Actions） ----------
+     拿到链接以后分两条路：MP4 是直链单文件 → aria2.yml（多连接分片）；
+     M3U8 是清单 → m3u8.yml（N_m3u8DL-RE 拉分片、解密、合成）。
+     调用方式照抄 tools/m3u8/m3u8-dispatch.user.js：POST /actions/workflows/<wf>/dispatches，
+     204 成功且没有响应体，所以运行要再去 runs 列表里按 created_at 认。
+     inputs 只发这两个 yml 里声明过的 key（urls / save_name / headers，外加只有 m3u8.yml 认的
+     mux_format）—— 多一个没声明的 key 就是 HTTP 422 "Unexpected inputs"，其余参数一律用 yml 默认值。 */
+  var GH_API = "https://api.github.com";
+  var GH_WF = { MP4: "aria2.yml", M3U8: "m3u8.yml" };
+  var GH_REPO = "smanx/gh-toolbox";
+  var GH_REF = "main";
+  var GH_FIND_MS = 60000;      // dispatches 只回 204，runner 起来前列表里没有这条运行，最多等这么久
+  var GH_RUN_MS = 600000;      // 单个下载的轮询上限（runner 排队 + 下载常常要几分钟）
+  var GH_FIND_GAP = 3000;
+  var GH_RUN_GAP = 5000;
+  var ghJob = 0;               // 代次号：再点一次按钮就让上一次的轮询闭嘴，不用等它超时
+
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function ghRepoPath(v) {
+    var s = String(v == null ? "" : v).trim()
+      .replace(/^https?:\/\/[^/]*github\.com\//i, "")
+      .replace(/^ssh:\/\/git@/i, "").replace(/^git@[^:]+:/i, "")
+      .replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "");
+    var seg = s.split("/").filter(Boolean);
+    return seg.length >= 2 ? seg[0] + "/" + seg[1] : "";
+  }
+
+  function ghCfg() {
+    return {
+      repo: ghRepoPath(store.get("one_gh_repo", GH_REPO)) || GH_REPO,
+      ref: trimSlash(store.get("one_gh_ref", GH_REF) || GH_REF),
+      token: String(store.get("one_gh_token", "") || "").trim(),
+      fmt: String(store.get("one_gh_fmt", "auto") || "auto"),
+      headers: String(store.get("one_gh_headers", "") || "").trim()
+    };
+  }
+
+  /* 抱抱脸那三个 key（hf_upload / hf_repo / hf_path）两个 yml 都声明过，投给哪条 workflow 都收得下。
+     HF token 不在这里也不在任何地方：两个 workflow 只从仓库 Secret（ARIA2_HF_TOKEN / M3U8_HF_TOKEN）读它，
+     页面这一侧碰不到、也不该碰到 —— 单子里能填的只有「传到哪」，没有「拿什么身份传」。 */
+  function ghHfCfg() {
+    return {
+      repo: ghHfRepo(store.get("one_gh_hf_repo", "")),
+      path: ghHfPath(store.get("one_gh_hf_path", "")),
+      on: store.get("one_gh_hf", "0") === "1"        // 单子里那个勾的默认值，勾过一次就记住
+    };
+  }
+  /* 数据集仓库 ID 就是「用户名/数据集名」两段；直接粘 huggingface.co 的链接也要认 */
+  function ghHfRepo(v) {
+    var s = String(v == null ? "" : v).trim()
+      .replace(/^https?:\/\/[^/]*huggingface\.co\//i, "")
+      .replace(/^(datasets|models|spaces)\//i, "")
+      .replace(/^\/+|\/+$/g, "");
+    var seg = s.split("/").filter(Boolean);
+    return seg.length >= 2 ? seg[0] + "/" + seg[1] : "";
+  }
+  /* 仓库内的子目录：服务端拿它当 upload_folder 的 path_in_repo，先把首尾斜杠和空的、. 与 .. 这些
+     没意义的段去掉。留空 = 仓库根目录，那时干脆不发这个 key，用 yml 里 default: "" 的那份。 */
+  function ghHfPath(v) {
+    return String(v == null ? "" : v).trim().split("/")
+      .filter(function (s) { return s && s !== "." && s !== ".."; }).join("/");
+  }
+
+  /* 下载时要带的请求头。UA 与来源不是「后台默默补」：开单子时就把它们写进那一栏，
+     栏里是什么就发什么 —— 删掉一条就不带一条，整栏清空就是这次不带任何自定义头。
+     ⚙ 里那栏仍只存「额外要带的」：⚙ 的值要落 localStorage，把此刻的 UA 存进去迟早过期；
+     单子是每次现开的，铺进去的 UA 与来源就永远跟着当前页面走。 */
+  var GH_HDR_ALIAS = { "user-agent": "User-Agent", "ua": "User-Agent",
+                       "referer": "Referer", "referrer": "Referer" };
+  function ghAutoHeaders() {
+    var o = {};
+    var ua = "";
+    try { ua = String((typeof navigator !== "undefined" && navigator.userAgent) || ""); } catch (e) {}
+    var origin = "";
+    try { origin = String((typeof location !== "undefined" && location.origin) || ""); } catch (e) {}
+    if (ua.trim()) o["User-Agent"] = ua.trim();
+    if (origin) o["Referer"] = trimSlash(origin) + "/";
+    return o;
+  }
+  /* 认不出这一栏（不是 JSON 对象）时回 null，由调用方决定退路，别在这里猜用户想发什么 */
+  function ghHeaderSet(raw, base) {
+    var j = safeJson(String(raw == null ? "" : raw).trim());
+    if (!j || typeof j !== "object" || Array.isArray(j)) return null;
+    var out = base || {};
+    Object.keys(j).forEach(function (k) {
+      var name = GH_HDR_ALIAS[String(k).toLowerCase()] || String(k);
+      var val = String(j[k] == null ? "" : j[k]).trim();
+      if (!val) { delete out[name]; return; }
+      out[name] = val;
+    });
+    return out;
+  }
+  function ghJsonOf(set) { return Object.keys(set).length ? JSON.stringify(set) : ""; }
+  /* 没走单子（或 ⚙ 里那条自己用）：自动两条打底，写的同名头覆盖它，显式空串 = 这条不要 */
+  function ghMergeHeaders(userRaw) { return ghHeaderSet(userRaw, ghAutoHeaders()) || ghAutoHeaders(); }
+  function ghHeadersJson(userRaw) { return ghJsonOf(ghMergeHeaders(userRaw)); }
+  /* 单子上那一栏：它铺出来时就含 UA 与来源，所以按字面走，不再往回补用户删掉的那条 */
+  function ghFormHeadersJson(formRaw) {
+    var s = String(formRaw == null ? "" : formRaw).trim();
+    if (!s) return "";
+    return ghJsonOf(ghHeaderSet(s, {}) || ghAutoHeaders());
+  }
+
+  /* 文件名两边规则相反，别想当然：
+     aria2 那条是 `aria2c -o <save_name>` 原样落盘，不给后缀就会得到一个没有扩展名的文件 → MP4 自动补 .mp4；
+     N_m3u8DL-RE 的 `--save-name` 反过来不能带后缀（它按 mux_format 自己补 .mp4/.mkv），
+     传 "x.mp4" 会得到 "x.mp4.mp4" → M3U8 把后缀剥掉再发。用户自己写了别的后缀（如 .mkv）就尊重它。 */
+  var GH_EXTS = "mp4|mkv|ts|webm|mov|m4v|m4a|aac|mp3|flac|zip";
+  function ghSplitExt(name) {
+    var s = String(name || "").trim();
+    var m = new RegExp("\\.(" + GH_EXTS + ")$", "i").exec(s);
+    return m ? { stem: s.slice(0, s.length - m[0].length), ext: m[1].toLowerCase() } : { stem: s, ext: "" };
+  }
+  function ghName(name, fmt) {
+    var p = ghSplitExt(name);
+    if (!p.stem) return "";
+    return fmt === "M3U8" ? p.stem : p.stem + "." + (p.ext || "mp4");
+  }
+  function sanitizeFileName(name) {
+    return String(name || "").replace(/[\\/:*?"<>|\x00-\x1f]/g, "_")
+      .replace(/\s+/g, " ").trim().slice(0, 120);
+  }
+  /* 默认文件名 = 详情标题（预告那条加「 预告」后缀），已经 sanitize 过 */
+  function ghDefaultStem(item, title) {
+    var base = sanitizeFileName(title) || ("one-" + (CAP.id || Date.now()));
+    return item && item.who === "预告" ? base + " 预告" : base;
+  }
+
+  /* 可下载候选，排序即优先级，判定规则与 summarize 那四格逐字一致：
+     锁定态服务端把 video_file 换成了 preview_video，所以只有「预告」两条；
+     清单只有一个槽位（video_hls 跟着 video_file 走），别把它同时算成正片和预告。 */
+  function downloadPlan(d) {
+    var pf = d.preview_video, vf = d.video_file;
+    var locked = !!(pf && vf === pf);
+    var host = playHost();
+    var hl = hlsUrl(d);
+    var out = [];
+    function push(who, fmt, url) { if (url) out.push({ who: who, fmt: fmt, url: url }); }
+    if (locked) {
+      push("预告", "MP4", videoUrl(pf, host));
+      push("预告", "M3U8", hl);
+    } else {
+      push("正片", "MP4", videoUrl(vf, host));
+      push("正片", "M3U8", hl);
+      push("预告", "MP4", videoUrl(pf, host));
+    }
+    return out;
+  }
+
+  function ghPick(plan, fmt) {
+    var want = fmt === "mp4" ? ["MP4"] : fmt === "hls" ? ["M3U8"] : ["MP4", "M3U8"];
+    for (var i = 0; i < want.length; i++) {
+      for (var j = 0; j < plan.length; j++) { if (plan[j].fmt === want[i]) return plan[j]; }
+    }
+    return null;
+  }
+
+  /* @grant none（默认、也是唯一验证过的安装形态）下没有 GM_xmlhttpRequest，只能用页面的 fetch：
+     api.github.com 回 Access-Control-Allow-Origin: *，带自定义头的 POST 会先走 OPTIONS 预检，实测通。
+     走 RAW_FETCH 并置 __oneqz_pause，免得自己发的请求被自己的钩子当成 App 的那次污染 CAP。 */
+  function ghFetch(method, path, body) {
+    var cfg = ghCfg();
+    if (!cfg.token) {
+      return Promise.reject(new Error("还没填 GitHub Token：⚙ 里粘一个（只需 Actions: write；" +
+        "@grant none 时它存在本页 localStorage，请用只授权这一个仓库的 fine-grained token）"));
+    }
+    var hs = { "Authorization": "Bearer " + cfg.token,
+               "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28" };
+    if (body !== undefined) hs["Content-Type"] = "application/json";
+    var url = GH_API + path;
+    var data = body === undefined ? undefined : JSON.stringify(body);
+    if (typeof GM_xmlhttpRequest === "function") {
+      return new Promise(function (res, rej) {
+        GM_xmlhttpRequest({ method: method, url: url, headers: hs, data: data,
+          onload: function (r) { res({ status: r.status, text: r.responseText || "" }); },
+          onerror: function () { rej(new Error("网络错误：访问不了 api.github.com")); } });
+      });
+    }
+    var call = (typeof RAW_FETCH === "function" ? RAW_FETCH : window.fetch);
+    if (typeof call !== "function") return Promise.reject(new Error("这个环境既没有 GM_xmlhttpRequest 也没有 fetch"));
+    try { window.__oneqz_pause = Date.now(); } catch (e) {}
+    function done() { try { window.__oneqz_pause = 0; } catch (e) {} }
+    return call(url, { method: method, headers: hs, body: data }).then(function (r) {
+      return r.text().then(function (t) { done(); return { status: r.status, text: t }; },
+                             function (e) { done(); throw e; });
+    }, function (e) {
+      done();
+      throw new Error("请求 api.github.com 失败：" + String((e && e.message) || e) +
+        "（跨域被页面挡了才需要改成带 GM_xmlhttpRequest 的安装方式）");
+    });
+  }
+
+  function ghErr(status, text) {
+    var j = safeJson(text);
+    var m = (j && j.message) || String(text || "").slice(0, 200) || "（无响应体）";
+    if (status === 401) return "HTTP 401：" + m + " —— Token 无效/过期，或没有 Actions 权限";
+    if (status === 403) return "HTTP 403：" + m + " —— 常见是仓库私有且 Token 没覆盖它，或触发了防滥用限制";
+    if (status === 404) return "HTTP 404：" + m + " —— Token 看不到这个仓库，或 owner/repo、workflow 文件名写错";
+    if (status === 422) return "HTTP 422：" + m + " —— 该分支上的 workflow 没声明这次发的 inputs（改过 yml 没推？ref 指错？）";
+    return "HTTP " + status + "：" + m;
+  }
+
+  /* sel = 表单里那一单的选项（{item, name, headers, mux, autoExt, hf, hfPath}），不传就按 ⚙ 的默认值自己挑一条。
+     autoExt 只影响面板措辞：框里那截 .mp4 是表单补的（true）还是用户自己打的（false）。
+     mux_format 只有 m3u8.yml 声明了，aria2.yml 没有这个 key —— 发过去就是 422，所以只在 M3U8 那条带上；
+     hf_* 三个两条 yml 都声明了，所以哪条都能带，但只在勾了「传到 HF」时发（不勾就沿用 yml 的 default: false）。
+     headers 分两条路：单子上那一栏（sel.headers 是字符串）按字面发 —— 它铺出来时就含 UA 与来源，
+     删掉的就真不带；没有单子可填时（sel.headers 没给）才退回「⚙ 里那些 + 自动两条」。 */
+  function ghInputs(item, title, sel) {
+    var cfg = ghCfg(), hf = ghHfCfg();
+    sel = sel || {};
+    var stem = sel.name === undefined || sel.name === null || String(sel.name).trim() === ""
+      ? ghDefaultStem(item, title) : String(sel.name);
+    var inputs = { urls: item.url, save_name: ghName(sanitizeFileName(stem), item.fmt) };
+    var hj = sel.headers === undefined ? ghHeadersJson(cfg.headers) : ghFormHeadersJson(sel.headers);
+    if (hj) inputs.headers = hj;
+    if (item.fmt === "M3U8") inputs.mux_format = sel.mux === false ? "none" : "mp4";
+    if (sel.hf === undefined ? hf.on : sel.hf) {
+      inputs.hf_upload = true;
+      var repo = ghHfRepo(sel.hfRepo === undefined ? hf.repo : sel.hfRepo);
+      if (repo) inputs.hf_repo = repo;
+      var dir = ghHfPath(sel.hfPath === undefined ? hf.path : sel.hfPath);
+      if (dir) inputs.hf_path = dir;
+    }
+    return inputs;
+  }
+
+  /* 面板上那行「传到哪」的说明：勾了才写目标，没勾就写清产物只在 artifacts 里。
+     措辞跟着 inputs 走 —— inputs 就是实际发出去的那份，说出去的话不会和 body 不一致。 */
+  function ghHfNote(inputs) {
+    if (inputs.hf_upload !== true) return "没勾：产物只留在那次运行的 artifacts 里";
+    if (!inputs.hf_repo) return "true → hf_repo 留空，用仓库 Secret ARIA2_HF_REPO / M3U8_HF_REPO 兜底；" +
+      "Secret 里也没有的话，服务端会记下「没配仓库 ID」并跳过上传（下载本身不受影响）。HF token 只在 Secret 里，脚本不碰";
+    return "true → https://huggingface.co/datasets/" + inputs.hf_repo + "/" +
+      (inputs.hf_path || "（仓库根目录）") + "。HF token 只在 Secret 里，脚本不碰；" +
+      "仓库不存在时服务端按 dataset 类型新建，默认 private（Secret <tool>_HF_PRIVATE 可改）";
+  }
+
+  function ghRunText(run) {
+    if (run.status === "completed") {
+      return run.conclusion === "success" ? "完成 success" : "结束 " + (run.conclusion || "?");
+    }
+    var zh = { queued: "排队中", in_progress: "进行中", waiting: "等待中",
+               action_required: "要人去 Actions 点 Run job（私有仓库额度用完后会卡在这）" };
+    return (zh[run.status] || run.status || "?") + " " + run.status;
+  }
+
+  function watchRun(my, cfg, wf, triggeredAt) {
+    function cancelled() { return my !== ghJob; }
+    function giveUp(left) {
+      if (cancelled()) { log("（已经又点了一次下载，这次的轮询停掉）", "dim"); return true; }
+      return left <= 0;
+    }
+    function findRun(left) {
+      if (giveUp(left)) {
+        log("已触发，但 " + Math.round(GH_FIND_MS / 1000) + " 秒内没在 runs 列表里认出新运行（runner 还在排队），" +
+            "去 " + cfg.repo + " 的 Actions 页面看", "bad");
+        return Promise.resolve(null);
+      }
+      return ghFetch("GET", "/repos/" + cfg.repo + "/actions/workflows/" + encodeURIComponent(wf) +
+                     "/runs?per_page=5&event=workflow_dispatch").then(function (r) {
+        if (r.status !== 200) throw new Error(ghErr(r.status, r.text));
+        var runs = (safeJson(r.text) || {}).workflow_runs || [];
+        for (var i = 0; i < runs.length; i++) {
+          if (new Date(runs[i].created_at).getTime() >= triggeredAt - 30000) return runs[i];
+        }
+        return sleep(GH_FIND_GAP).then(function () { return findRun(left - GH_FIND_GAP); });
+      });
+    }
+    function poll(run, left) {
+      if (cancelled()) { log("（已经又点了一次下载，这次的轮询停掉）", "dim"); return Promise.resolve(run); }
+      var over = run.status === "completed";
+      var good = run.conclusion === "success";
+      log("   运行 #" + (run.run_number || "") + "  " + ghRunText(run) + "   " + (run.html_url || ""),
+          over ? (good ? "ok" : "bad") : "dim");
+      if (over) {
+        log(good ? "✓ " + wf + " 下载完成（产物在 Actions 那次运行的 artifacts 里，除非勾了 hf_upload）"
+                 : "× " + wf + " 结束但没成功：" + (run.conclusion || "?") + "，点开上面那条看日志", good ? "ok" : "bad");
+        return Promise.resolve(run);
+      }
+      if (left <= 0) {
+        log("本机轮询到 " + Math.round(GH_RUN_MS / 1000) + " 秒结束，运行大概率还在跑，用上面那条链接看", "dim");
+        return Promise.resolve(run);
+      }
+      return sleep(GH_RUN_GAP).then(function () {
+        return ghFetch("GET", "/repos/" + cfg.repo + "/actions/runs/" + run.id).then(function (r) {
+          if (r.status !== 200) throw new Error(ghErr(r.status, r.text));
+          return poll(safeJson(r.text) || run, left - GH_RUN_GAP);
+        });
+      });
+    }
+    return findRun(GH_FIND_MS).then(function (run) {
+      if (!run) return null;
+      log("   认出 " + wf + " #" + (run.run_number || "") + "（" + (run.head_branch || cfg.ref) + "），每 " +
+          GH_RUN_GAP / 1000 + " 秒刷一次状态", "dim");
+      return poll(run, GH_RUN_MS);
+    }).catch(function (e) { log("× 查运行状态失败：" + String(e && e.message || e), "bad"); });
+  }
+
+  /* 真正发触发的那一步。res = 用哪份详情（见 detailSource），sel = ⬇ 表单里那一单的选项；
+     不传 sel 就按 ⚙ 的默认值自己挑一条（离线用例和「没表单直接调」都走这条）。 */
+  function sendToAction(res, sel) {
+    var src = res && res.data ? res.data : null;
+    if (!src) {
+      log("还没有可用的详情：先在详情页点进卡片拦到 id，按「用模块 token 重取」（或把自动替换打开）再发下载。", "bad");
+      return Promise.resolve(null);
+    }
+    var plan = downloadPlan(src);
+    if (!plan.length) { log("这次详情里一个可下载链接都没有（正片/预告、MP4/M3U8 全空）。", "bad"); return Promise.resolve(null); }
+    var cfg = ghCfg();
+    sel = sel || {};
+    var item = sel.item && sel.item.url ? sel.item : ghPick(plan, cfg.fmt);
+    if (!item) {
+      log("格式选的是「" + (cfg.fmt === "mp4" ? "仅 MP4" : "仅 M3U8") + "」，这次只有 " +
+          plan.map(function (p) { return p.who + " " + p.fmt; }).join(" / ") + " —— 换格式，或换身份重取详情。", "bad");
+      return Promise.resolve(null);
+    }
+    if (!cfg.token) { log("还没填 GitHub Token（⚙ 最下面那一栏），填好会自动保存。", "bad"); return Promise.resolve(null); }
+    var wf = GH_WF[item.fmt];
+    log("── 发到 GitHub 下载 ──", "dim");
+    log("   用的详情   " + ((res.from || "?") + "，标题 " + (src.title || "（无）")), "dim");
+    log("   这次可选 " + plan.map(function (p) { return p.who + " " + p.fmt; }).join(" / ") +
+        "   选了 " + item.who + " " + item.fmt +
+        (sel.item ? "（面板上选的）" : "（格式设置：" + cfg.fmt + "）"), "dim");
+    if (item.who === "预告") log("   注意：下的是预告 —— 这个身份没解锁正片，服务端只回了 preview。", "dim");
+    if (item.fmt === "M3U8") {
+      var age = Math.round((Date.now() - (CAP.at || 0)) / 1000);
+      log("   M3U8 那条链接里的 params 是这次详情临时生成的，runner 排队+启动要几十秒到几分钟；" +
+          "过期就重新取一次详情再点（这次详情距今已 " + age + " 秒）", "dim");
+    }
+    var my = ++ghJob;
+    var inputs = ghInputs(item, src.title, sel);
+    var triggeredAt = Date.now();
+    log("   POST " + cfg.repo + " / " + wf + "  ref=" + cfg.ref, "dim");
+    log("   urls       " + item.url);
+    log("   save_name  " + inputs.save_name +
+        (item.fmt === "M3U8" ? "（不带后缀，RE 按 mux_format 补）"
+         : !ghSplitExt(sel.name).ext || sel.autoExt ? "（单子上没写后缀，aria2 是 -o 原样落盘，自动补成 .mp4）"
+                                                    : "（就按单子上这个名字落盘）"), "dim");
+    if (inputs.mux_format) log("   mux_format " + inputs.mux_format +
+        (inputs.mux_format === "none" ? "（不混流，产出分轨原文件）" : "（下载完合成转封装成 MP4）"), "dim");
+    /* 这行的措辞必须由「真正发出去的那份 + 栏里原话」推出来，不能照抄默认话术：
+       栏里写成 JSON 才叫「写什么发什么」，写坏了是退回自动那两条，清空是一个都不带 —— 三种都得说准。 */
+    var hdrNote;
+    if (sel.headers === undefined) hdrNote = "（没走单子：⚙ 里那些 + 脚本按当前页面补的 UA 与来源）";
+    else if (!inputs.headers) hdrNote = "（这一栏没写出任何要发的头）";
+    else hdrNote = ghHeaderSet(sel.headers) ? "（就是单子上那一栏，栏里写什么发什么）"
+                                           : "（那一栏没写成 JSON 对象，退回自动补的 UA 与来源）";
+    log("   headers    " + (inputs.headers || "（不带）") + hdrNote, "dim");
+    if (sel.headers !== undefined && !inputs.headers)
+      log("   这一栏没写出任何要发的头（清空或全是空值都一样）：这次一个自定义头都不带。" +
+          "媒体域对没有 UA/来源的直连常会拒绝，运行失败就先回来把两条补上。", "bad");
+    log("   hf_upload  " + ghHfNote(inputs), "dim");
+    return ghFetch("POST", "/repos/" + cfg.repo + "/actions/workflows/" + encodeURIComponent(wf) + "/dispatches",
+                   { ref: cfg.ref, inputs: inputs }).then(function (r) {
+      if (r.status !== 204) throw new Error(ghErr(r.status, r.text));
+      log("✓ 已触发（HTTP 204，GitHub 这个接口不返回运行 id，下面按时间认）", "ok");
+      return watchRun(my, cfg, wf, triggeredAt);
+    }).catch(function (e) { log("× 触发失败：" + String(e && e.message || e), "bad"); });
+  }
+
   /* ---------- UI ---------- */
   /* 夹位置是「无论窗口怎么缩放，图标都必须在窗口里」的全部难度所在。
      写成不吃 DOM 的纯函数，_core_test.js 就能拿极端视口（320x240、比球还窄的视口）直接算，
@@ -953,6 +1348,13 @@
     /* 复选框不能跟着 input 的 width:100% 走，否则整行被撑成一个巨大的方块 */
     "#oneqz .cfg label.auto{background:#0f1320;border:1px solid #3a4050;border-radius:6px;padding:6px}",
     "#oneqz .cfg label.auto input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px}",
+    /* ⬇ 下载表单：和 .cfg 同一套底色，但它是「一次性的单子」，出现/消失都由 ⬇ 与取消控制 */
+    "#oneqz .ghform{margin:8px 0;padding:8px;border:1px solid #3a6ea5;border-radius:6px;background:#0f1320}",
+    "#oneqz .ghform label{display:block;margin:5px 0;color:#9aa3b8}",
+    "#oneqz .ghform input[type=text]{width:100%;box-sizing:border-box;background:#0d0f14;color:#e8e8ee;" +
+      "border:1px solid #3a4050;border-radius:4px;padding:4px;font:inherit}",
+    "#oneqz .ghform input[type=radio],#oneqz .ghform input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px}",
+    "#oneqz .ghform .ghrow{display:flex;gap:6px;margin-top:8px}",
     "#oneqz .ok{color:#7ddc8f}#oneqz .bad{color:#ff8f8f}#oneqz .dim{color:#8a93a8}",
     "#oneqz .json{color:#c3ffd8;max-height:40vh;overflow:auto;border-top:1px dashed #333a48;margin-top:6px;padding-top:6px}"
   ].join("\n");
@@ -972,7 +1374,7 @@
     /* 现在滚动的是展开体，不是 .panel（panel 不再自己带 overflow），滚错对象面板就不会跟到底 */
     if (hostDiv) hostDiv.scrollTop = hostDiv.scrollHeight;
   }
-  function reset() { if (panel) { panel.textContent = ""; lastResult = null; } }
+  function reset() { if (panel) { panel.textContent = ""; lastResult = null; } if (ghFormEl) closeGhForm(); }
 
   function isDetailPage() { return /detail|videoPlay|minified/i.test(location.hash || ""); }
   function hookTag() {
@@ -1204,6 +1606,7 @@
                   : "→ 两次给的不是同一个文件：门控由 token 所属账号决定，列表/详情都是服务端给的", same ? "dim" : "ok");
       }
       lastResult = json;
+      CAP.resId = CAP.id;    // 这份结果属于哪个 id，⬇ 下载按钮据此判断它是不是当前条目的
       console.log("[oneQZ] " + DETAIL + " 解密结果 id=" + CAP.id + " 身份=" + ident.label, json);
       var pre = document.createElement("div");
       pre.className = "json";
@@ -1212,6 +1615,189 @@
     }).catch(function (e) {
       log("× " + String(e && e.message || e), "bad");
     });
+  }
+
+  /* ⬇ 下载用哪份详情：优先「用模块 token 重取」那一次，但它必须还属于当前这个 id
+     （换卡片没重取时 CAP.id 会变、resId 对不上），否则退回页面自己刚拦到的那次。 */
+  function detailSource() {
+    var mine = (CAP.id && lastResult && lastResult.data && String(CAP.resId) === String(CAP.id)) ? lastResult : null;
+    if (mine) return { data: mine.data, from: "模块 token 重取那次（id=" + CAP.id + "）" };
+    var page = (CAP.response && CAP.response.code === 200 && CAP.response.data) ? CAP.response : null;
+    if (page) return { data: page.data, from: "页面自己拦到的那次" + (autoOn() ? "（自动替换开着，这一份已是模块身份的结果）" : "") };
+    return null;
+  }
+
+  /* ---------- ⬇ 下载表单：点 ⬇ 先铺一张单子，改完点「确认触发」才真发 ----------
+     文件名、请求头、下哪一条、M3U8 要不要转 MP4 —— 这些都是「每次可能不一样」的，
+     塞进 ⚙ 当全局设置反而每次都得回去改，所以每次点 ⬇ 现填一张单子；
+     ⚙ 里那几项（格式/headers/仓库/分支/token）只当这张单子的默认值。 */
+  var ghFormEl = null;
+  function closeGhForm() {
+    if (ghFormEl && ghFormEl.parentNode) ghFormEl.parentNode.removeChild(ghFormEl);
+    ghFormEl = null;
+  }
+  function ghHostOf(url) { var m = /^https?:\/\/([^/]+)/.exec(String(url || "")); return m ? m[1] : "?"; }
+  function ghRadioBox(plan, pre) {
+    var links = document.createElement("div");
+    Array.prototype.forEach.call(plan, function (it, i) {
+      var lab = document.createElement("label");
+      var r = document.createElement("input");
+      r.type = "radio"; r.name = "ghf_item"; r.value = String(i); r.checked = (i === pre);
+      lab.appendChild(r);
+      lab.appendChild(document.createTextNode(" " + it.who + " " + it.fmt + " → " + GH_WF[it.fmt] +
+        "（" + ghHostOf(it.url) + "）"));
+      links.appendChild(lab);
+    });
+    return links;
+  }
+  function openGhForm(res) {
+    var cfg = ghCfg(), hf0 = ghHfCfg();
+    var plan = res && res.data ? downloadPlan(res.data) : [];
+    /* 没详情 / 没链接 / 没 token 这三种前置不满足的情况，交回 sendToAction 用同一套话回，
+       免得同一个提示两处各写一份、改了一处漏另一处 */
+    if (!res || !res.data || !plan.length || !cfg.token) return sendToAction(res);
+    var title = res.data.title || "";
+    var startIdx = (function () { var p = ghPick(plan, cfg.fmt); return p ? plan.indexOf(p) : 0; })();
+    var nameDirty = false;
+    var nameAutoExt = false;      // 框里那截后缀是表单自己补的、还是用户打的 —— 面板上要说清是谁补的
+    closeGhForm();
+
+    var box = document.createElement("div");
+    box.className = "ghform";
+    var head = document.createElement("div");
+    head.className = "dim";
+    head.textContent = "⬇ 发到 GitHub 下载 —— 先确认这一单（只对本次有效；仓库 " + cfg.repo +
+      " / 分支 " + cfg.ref + " 在 ⚙ 里改）";
+    box.appendChild(head);
+
+    var links = ghRadioBox(plan, startIdx);
+    box.appendChild(links);
+
+    function chosen() {
+      var rs = links.querySelectorAll("input[type=radio]");
+      for (var i = 0; i < rs.length; i++) if (rs[i].checked) return plan[Number(rs[i].value)] || plan[0];
+      return plan[0];
+    }
+
+    var nameLabel = document.createElement("label");
+    nameLabel.appendChild(document.createTextNode("文件名 save_name"));
+    var nameIn = document.createElement("input");
+    nameIn.type = "text"; nameIn.name = "ghf_name";
+    nameLabel.appendChild(nameIn);
+    box.appendChild(nameLabel);
+
+    var muxLab = document.createElement("label");
+    var muxIn = document.createElement("input");
+    muxIn.type = "checkbox"; muxIn.name = "ghf_mux";
+    muxIn.checked = store.get("one_gh_mux", "1") !== "0";      // 默认「转成 MP4」，勾过一次的选择不重置
+    muxLab.appendChild(muxIn);
+    muxLab.appendChild(document.createTextNode(" 转成 MP4（mux_format=mp4）—— 不勾就是不混流，产出分轨原文件"));
+    box.appendChild(muxLab);
+
+    var hfLab = document.createElement("label");
+    var hfIn = document.createElement("input");
+    hfIn.type = "checkbox"; hfIn.name = "ghf_hf";
+    hfIn.checked = hf0.on;                                             // ⚙ 里那个默认勾，勾过一次也记住
+    hfLab.appendChild(hfIn);
+    hfLab.appendChild(document.createTextNode(" ☁ 传到 HF（hf_upload）—— 下载完成后把产物传进 Hugging Face 数据集"));
+    box.appendChild(hfLab);
+
+    var pathLab = document.createElement("label");
+    pathLab.appendChild(document.createTextNode("上传目录 hf_path（数据集仓库内的子目录，留空=仓库根路径）"));
+    var pathIn = document.createElement("input");
+    pathIn.type = "text"; pathIn.name = "ghf_hf_path";
+    pathIn.placeholder = "one/videos";
+    pathIn.value = hf0.path;                                           // 上次在这张单子上填的那个目录
+    pathLab.appendChild(pathIn);
+    box.appendChild(pathLab);
+
+    var hfHint = document.createElement("div");
+    hfHint.className = "dim";
+    box.appendChild(hfHint);
+
+    var hLab = document.createElement("label");
+    hLab.appendChild(document.createTextNode(
+      "请求头 headers（UA 与来源已按当前页面填在这一栏里 —— 这栏就是最终发出去的那份，删掉一条就不带一条）"));
+    var hIn = document.createElement("input");
+    hIn.type = "text"; hIn.name = "ghf_headers";
+    hIn.placeholder = '{"User-Agent":"…","Referer":"…","Cookie":"…"}';
+    hIn.value = ghHeadersJson(cfg.headers);      // 铺完整一份（自动两条 + ⚙ 里额外的），不让人在后台猜
+    hLab.appendChild(hIn);
+    box.appendChild(hLab);
+
+    var hint = document.createElement("div");
+    hint.className = "dim";
+    box.appendChild(hint);
+
+    var row = document.createElement("div");
+    row.className = "ghrow";
+    var go = document.createElement("button");
+    go.setAttribute("data-ghact", "go");
+    go.textContent = "✓ 确认触发";
+    var cancel = document.createElement("button");
+    cancel.setAttribute("data-ghact", "cancel");
+    cancel.textContent = "取消";
+    row.appendChild(go); row.appendChild(cancel);
+    box.appendChild(row);
+
+    /* 换选哪条时：没动过的文件名按新那条重算默认，动过的只把后缀按新格式改回来，
+       免得用户手打的「我的名字」一radio 就没了 */
+    function syncForm() {
+      var it = chosen(), isHls = it.fmt === "M3U8";
+      muxLab.style.display = isHls ? "" : "none";
+      var stem = nameDirty ? ghSplitExt(nameIn.value).stem : ghDefaultStem(it, title);
+      nameIn.value = ghName(sanitizeFileName(stem), it.fmt);
+      nameAutoExt = it.fmt !== "M3U8" && !ghSplitExt(stem).ext;
+      hint.textContent = isHls
+        ? "M3U8 → m3u8.yml：save_name 不带后缀（RE 按 mux_format 自己补），清单里的 params 有时效，触发后别让 runner 排太久"
+        : "MP4 → aria2.yml：save_name 就是最终文件名，没写后缀会自动补 .mp4";
+      var dir = ghHfPath(pathIn.value);
+      /* 这里现读一次 ⚙，不用开单子时那份快照：单子开着的时候人也能去上面改 hf_repo，
+         提示写的落点必须和「✓ 确认触发」真正发出去的那一份一致 */
+      var hfNow = ghHfCfg();
+      hfHint.textContent = hfIn.checked
+        ? "传到 " + (hfNow.repo
+            ? "https://huggingface.co/datasets/" + hfNow.repo + "/" + (dir || "（仓库根目录）")
+            : "（⚙ 里没填 hf_repo，改用仓库 Secret ARIA2_HF_REPO / M3U8_HF_REPO 兜底；Secret 也没有就只下载不上传）") +
+          " —— HF 的 token 只存在那个仓库的 Secret 里，这张单子上不填、脚本也拿不到"
+        : "不勾就只在 Actions 那次运行的 artifacts 里取；上传目录现在填的是「" + (dir || "（空）") + "」，改过一次就会被记住，下次开单子自动带回";
+    }
+    nameIn.addEventListener("input", function () { nameDirty = true; nameAutoExt = false; });
+    Array.prototype.forEach.call(links.querySelectorAll("input[type=radio]"), function (r) {
+      r.addEventListener("change", syncForm);
+    });
+    hfIn.addEventListener("change", syncForm);
+    pathIn.addEventListener("input", syncForm);
+    go.addEventListener("click", function () {
+      var it = chosen();
+      var raw = nameIn.value;                       // 原样交给 sendToAction：后缀是不是用户自己写的，它要在面板上说明白
+      var nm = ghName(sanitizeFileName(raw), it.fmt);
+      if (!nm) { log("文件名空着没法下（aria2 的 -o、RE 的 --save-name 都拿它当名字），填一个或清空让它回到默认。", "bad"); return; }
+      var hs = String(hIn.value || "").trim();
+      if (hs && !/^\{/.test(hs)) {
+        log("headers 得是一行 JSON 对象（例：{\"Cookie\":\"…\"}），这栏写坏了 —— 这次按刚铺好的那份（自动的 UA 与来源）发。", "bad");
+        hs = ghHeadersJson(cfg.headers);
+      }
+      var dir = ghHfPath(pathIn.value);
+      store.set("one_gh_mux", muxIn.checked ? "1" : "0");
+      store.set("one_gh_hf", hfIn.checked ? "1" : "0");
+      store.set("one_gh_hf_path", dir);             // 目录只认这一个键：⚙ 里看到的默认值就是上次在这张单子上填的
+      closeGhForm();
+      sendToAction(res, { item: it, name: raw, headers: hs, mux: muxIn.checked, autoExt: nameAutoExt,
+                          hf: hfIn.checked, hfPath: dir });
+      if (isOpen()) placeBody();
+    });
+    cancel.addEventListener("click", function () {
+      closeGhForm();
+      log("已取消，没有发出任何请求。", "dim");
+      if (isOpen()) placeBody();
+    });
+
+    syncForm();
+    panel.appendChild(box);
+    ghFormEl = box;
+    if (hostDiv) hostDiv.scrollTop = hostDiv.scrollHeight;
+    return box;
   }
 
   function copyJson() {
@@ -1242,6 +1828,7 @@
         '<button data-act="cap" title="显示拦截到的 App 请求与响应">看拦截</button>' +
         '<button data-act="diag" title="检查钩子装在哪个世界、为何拦不到">诊断</button>' +
         '<button data-act="copy" title="复制上一次解密出的 JSON">复制 JSON</button>' +
+        '<button data-act="dl" title="把刚拿到的链接交给本仓库的 Actions：MP4 走 aria2.yml，M3U8 走 m3u8.yml">⬇ 发到 GitHub 下载</button>' +
         '<button data-act="cfg" title="切换配置">⚙</button>' +
         '<button data-act="close" title="收起（也可以再点一次悬浮球）">收起 ✕</button>' +
       '</div>' +
@@ -1259,7 +1846,28 @@
         '<label>模块 token（会覆盖内置值，换 exp 后粘新的）<input name="token" placeholder="eyJ0eXAiOiJKV1Qi…"></label>' +
         '<label>指定 api 域（留空=自动，优先用拦截到的域，再退 localStorage.current_domain 与种子池）<input name="host" placeholder="https://api.61c76a0.com"></label>' +
         '<label>播放域名（留空=自动：先取页面自己正在播的那次请求的域，再退媒体池种子。它和请求体里的 ts 域名 dn 不是一回事）<input name="play" placeholder="https://z4bey8.bx7qxb.com"></label>' +
-        '<div class="dim" style="margin-top:6px">detail 只是读：本脚本不调用 purchase/buy，不扣币，不取流。</div>' +
+        '<div class="dim" style="margin-top:8px">GitHub 下载（⬇ 那个按钮先在面板里铺一张单子：选哪条链接、文件名、请求头、要不要传 HF，确认后才投给本仓库的 Actions：MP4→aria2.yml，M3U8→m3u8.yml。下面这几项是那张单子的默认值）</div>' +
+        '<label>仓库 owner/repo<input name="gh_repo" placeholder="smanx/gh-toolbox"></label>' +
+        '<label>分支 ref<input name="gh_ref" placeholder="main"></label>' +
+        '<label>下载格式（单子里默认选中哪一条）<select name="gh_fmt">' +
+          '<option value="auto">自动：有 MP4 用 MP4（aria2），没有才用 M3U8（m3u8）</option>' +
+          '<option value="mp4">仅 MP4 → aria2.yml</option>' +
+          '<option value="hls">仅 M3U8 → m3u8.yml</option></select></label>' +
+        '<label>GitHub Token<input name="gh_token" type="password" placeholder="github_pat_… 或 ghp_…（需要 Actions: write）"></label>' +
+        '<label>额外请求头 headers（这里只放额外要带的；开单子时会连 UA 与来源一起铺进单子的 headers 栏，' +
+        '那一栏里写的就是最终发出去的那份）<input name="gh_headers" placeholder=\'{"Cookie":"…"}\'></label>' +
+        '<div class="dim" data-hdrprev></div>' +
+        '<div class="dim" style="margin-top:8px">Hugging Face 上传（单子里勾「☁ 传到 HF」才会传，下面这几栏是那张单子的默认值；' +
+        '产物按 dataset 仓库上传，没配仓库 ID 时走 Secret ARIA2_HF_REPO / M3U8_HF_REPO 兜底）</div>' +
+        '<label>HF 数据集仓库 ID（如 myuser/my-videos，也可直接粘 huggingface.co 的链接；留空=用 Secret 兜底）<input name="gh_hf_repo" placeholder="myuser/my-videos"></label>' +
+        '<label>上传目录（hf_path，数据集仓库内的子目录，如 one/videos；留空=仓库根路径。单子里可以改，改过就记住，下次开单子自动带回）<input name="gh_hf_path" placeholder="one/videos"></label>' +
+        '<label class="auto"><input type="checkbox" name="gh_hf_on"> 默认勾上「☁ 传到 HF」<span class="dim">这里只管单子里那个勾的初始状态，真正传不传每次仍以单子为准；' +
+        '上传本身由 workflow 完成，HF 的 token 只放在仓库 Secret（ARIA2_HF_TOKEN / M3U8_HF_TOKEN）里，本脚本不经手、也不往页面上写。</span></label>' +
+        '<div class="dim">Token 只用来触发 workflow 和查自己那次的运行状态。本脚本是 @grant none，' +
+        '它和这里填的东西都存在 j7tu.com 这个站点的 localStorage 里（不是 Tampermonkey 的存储），' +
+        '所以请只用一个「只授权这一个仓库、只给 Actions: write」的 fine-grained token，别拿账号级 PAT。</div>' +
+        '<div class="dim" style="margin-top:6px">detail 只是读：本脚本不调用 purchase/buy，不扣币，不取流；' +
+        '下载由你在 Actions 里主动触发，跑在你自己的仓库上。</div>' +
       '</div>' +
       '<div class="panel"></div>';
     (document.body || document.documentElement).appendChild(hostDiv);
@@ -1303,6 +1911,23 @@
     cfgBox.querySelector("input[name=host]").value = store.get("one_host", "");
     cfgBox.querySelector("input[name=play]").value = store.get("one_play_host", "");
     cfgBox.querySelector("input[name=auto]").checked = autoOn();
+    cfgBox.querySelector("input[name=gh_repo]").value = store.get("one_gh_repo", GH_REPO);
+    cfgBox.querySelector("input[name=gh_ref]").value = store.get("one_gh_ref", GH_REF);
+    cfgBox.querySelector("select[name=gh_fmt]").value = ghCfg().fmt;
+    cfgBox.querySelector("input[name=gh_token]").value = store.get("one_gh_token", "");
+    cfgBox.querySelector("input[name=gh_headers]").value = store.get("one_gh_headers", "");
+    cfgBox.querySelector("input[name=gh_hf_repo]").value = store.get("one_gh_hf_repo", "");
+    cfgBox.querySelector("input[name=gh_hf_path]").value = store.get("one_gh_hf_path", "");
+    cfgBox.querySelector("input[name=gh_hf_on]").checked = ghHfCfg().on;
+    /* ⚙ 里当场写出「单子的 headers 栏会铺成哪一份」：UA 与来源是每次开单子按当前页面算的，
+       所以这里只是给你看一眼最终那串长什么样，存的仍然只有你额外要带的那几条。 */
+    function syncHdrPrev() {
+      var pv = cfgBox.querySelector("[data-hdrprev]");
+      if (!pv) return;
+      var extra = cfgBox.querySelector("input[name=gh_headers]");
+      pv.textContent = "单子里那一栏会铺成：" + (ghHeadersJson(extra ? extra.value : "") || "（空）");
+    }
+    syncHdrPrev();
     armReplace();                      // 读回上次的开关：开就把 DOM 桥挂上，关就摘掉
     Array.prototype.forEach.call(cfgBox.querySelectorAll("select,input"), function (el) {
       el.addEventListener("change", function () {
@@ -1318,6 +1943,47 @@
           log(s ? "自动替换已开：" + s.label + " —— 页面自己发出的详情等请求会被换成这个身份（设置已记住，下次进页面读回）"
                 : "自动替换已关：页面的请求原样发出去，只有点「用模块 token 重取」时才换身份", s ? "ok" : "dim");
           updateChip("auto");
+        }
+        if (k === "gh_repo") {
+          var rp = ghRepoPath(el.value);
+          if (rp) { store.set("one_gh_repo", rp); el.value = rp; log("下载仓库已存为 " + rp, "dim"); }
+          else { store.set("one_gh_repo", GH_REPO); el.value = GH_REPO; log("仓库得写成 owner/repo，已退回默认 " + GH_REPO, "bad"); }
+        }
+        if (k === "gh_ref") store.set("one_gh_ref", trimSlash(el.value.trim()) || GH_REF);
+        if (k === "gh_fmt") store.set("one_gh_fmt", el.value);
+        if (k === "gh_token") {
+          store.set("one_gh_token", el.value.trim());
+          log(el.value.trim() ? "GitHub Token 已保存（只存在本机；@grant none 下就是 j7tu.com 的 localStorage）"
+                              : "GitHub Token 已清空，⬇ 按钮会提示未配置", "dim");
+        }
+        if (k === "gh_headers") {
+          var hv = el.value.trim();
+          if (!hv || !/^\{/.test(hv) || safeJson(hv)) {
+            store.set("one_gh_headers", hv);
+            log("额外请求头已存为 " + (hv || "（空）") + " —— 开单子时它会排在自动补的 UA 与来源后面，那一栏就是最终发出去的那份", "dim");
+            syncHdrPrev();
+          }
+          else { el.value = store.get("one_gh_headers", ""); log("headers 得是一行合法 JSON，已退回上一个值", "bad"); syncHdrPrev(); }
+        }
+        if (k === "gh_hf_repo") {
+          var hr = ghHfRepo(el.value);
+          if (!hr && String(el.value).trim()) {
+            el.value = store.get("one_gh_hf_repo", "");
+            log("HF 仓库 ID 得写成 owner/name（或直接粘数据集链接），已退回上一个值", "bad");
+          } else {
+            store.set("one_gh_hf_repo", hr); el.value = hr;
+            log(hr ? "HF 目标数据集已存为 " + hr + "（单子里勾了才传）"
+                   : "HF 仓库 ID 清空：勾了「传到 HF」时改用 Secret ARIA2_HF_REPO / M3U8_HF_REPO 兜底", "dim");
+          }
+        }
+        if (k === "gh_hf_path") {
+          var hpd = ghHfPath(el.value);
+          store.set("one_gh_hf_path", hpd); el.value = hpd;
+          log("HF 上传目录已存为 " + (hpd || "（仓库根路径）") + "，单子里改的话以单子为准（同一个键）", "dim");
+        }
+        if (k === "gh_hf_on") {
+          store.set("one_gh_hf", el.checked ? "1" : "0");
+          log(el.checked ? "单子里的「☁ 传到 HF」默认勾上" : "单子里的「☁ 传到 HF」默认不勾", "dim");
         }
         if (k === "mode" || k === "token") armReplace();     // 身份来源变了，DOM 桥要跟着刷新
         if (k !== "mode") return;
@@ -1335,6 +2001,7 @@
       else if (act === "cap") showAppCapture();
       else if (act === "diag") diagnose();
       else if (act === "copy") copyJson();
+      else if (act === "dl") { var ds = detailSource(); if (!ds) reset(); openBody(); openGhForm(ds); }
       else if (act === "close") closeBody();
       else { cfgBox.classList.toggle("on"); placeBody(); }
       if (isOpen()) placeBody();
