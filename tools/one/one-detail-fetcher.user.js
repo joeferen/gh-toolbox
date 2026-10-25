@@ -2,7 +2,7 @@
 // @name         ONE 详情页 · 模块 token 取数器
 // @namespace    qoder.one.detail.fetcher
 // @version      2.17.0
-// @description  不依赖 URL：拦截页面自己发出的 /v2.5/article/detail（真实传输是 XHR），解密请求体还原文章 id 与 dn，再用 one 模块 token 重取一次详情；按「正片/预告 × MP4/M3U8」四格铺链接（可点、可选中复制），缺哪格就写清为什么缺，并对比两种身份。设置里可开「自动替换页面的 token」（默认关，开关会被记住）：开着时 App 自己发出的请求出门前就换成所选 token，页面直接看到替换身份的结果。拿到链接后点「⬇ 发到 GitHub 下载」先填一张单子（选哪条链接、文件名、请求头——UA 与来源已铺进那一栏、改栏里的字就按改后的发，M3U8 还问要不要转成 MP4，勾一下就把产物自动传到 Hugging Face 数据集、上传目录可改且会被记住），确认后投给本仓库的 Actions：MP4 → aria2.yml，M3U8 → m3u8.yml
+// @description  不依赖 URL：拦截页面自己发出的 /v2.5/article/detail（真实传输是 XHR），解密请求体还原文章 id 与 dn，再用 one 模块 token 重取一次详情；按「正片/预告 × MP4/M3U8」四格铺链接（可点、可选中复制），缺哪格就写清为什么缺，并对比两种身份。设置里可开「自动替换页面的 token」（默认关，开关会被记住）：开着时 App 自己发出的请求出门前就换成所选 token，页面直接看到替换身份的结果。拿到链接后点「⬇」先填一张单子（选哪条链接、文件名、请求头——UA 与来源已铺进那一栏、改栏里的字就按改后的发，M3U8 还问要不要转成 MP4，勾一下就把产物自动传到 Hugging Face 数据集、上传目录可改且会被记住），确认后投给本仓库的 Actions：MP4 → aria2.yml，M3U8 → m3u8.yml
 // @match        https://j7tu.com/*
 // @match        http://j7tu.com/*
 // @grant        none
@@ -53,7 +53,7 @@
  *   CAP 里存的永远是「页面自己那次」的头，替换出去的身份不反过来污染判读。
  *
  * 一键交给 GitHub Actions（v2.14 加触发，v2.15 改成先填单子，v2.16 加抱抱脸上传，v2.17 把 UA/来源铺进那一栏）：
- *   面板上「⬇ 发到 GitHub 下载」
+ *   面板上「⬇」
  *   先在面板里铺一张一次性表单 —— 下哪一条（正片/预告 × MP4/M3U8）、文件名 save_name、
  *   请求头 headers（已按当前页面铺好 UA 与来源）、选 M3U8 时多一个「转成 MP4」的勾（默认勾上）、
  *   一个「☁ 传到 HF」的勾 + 一张可改的「上传目录 hf_path」（默认值在 ⚙，勾和目录都会被记住）——
@@ -1666,7 +1666,7 @@
     box.className = "ghform";
     var head = document.createElement("div");
     head.className = "dim";
-    head.textContent = "⬇ 发到 GitHub 下载 —— 先确认这一单（只对本次有效；仓库 " + cfg.repo +
+    head.textContent = "⬇ —— 先确认这一单（只对本次有效；仓库 " + cfg.repo +
       " / 分支 " + cfg.ref + " 在 ⚙ 里改）";
     box.appendChild(head);
 
@@ -1828,7 +1828,7 @@
         '<button data-act="cap" title="显示拦截到的 App 请求与响应">看拦截</button>' +
         '<button data-act="diag" title="检查钩子装在哪个世界、为何拦不到">诊断</button>' +
         '<button data-act="copy" title="复制上一次解密出的 JSON">复制 JSON</button>' +
-        '<button data-act="dl" title="把刚拿到的链接交给本仓库的 Actions：MP4 走 aria2.yml，M3U8 走 m3u8.yml">⬇ 发到 GitHub 下载</button>' +
+        '<button data-act="dl" title="把刚拿到的链接交给本仓库的 Actions：MP4 走 aria2.yml，M3U8 走 m3u8.yml">⬇</button>' +
         '<button data-act="cfg" title="切换配置">⚙</button>' +
         '<button data-act="close" title="收起（也可以再点一次悬浮球）">收起 ✕</button>' +
       '</div>' +
